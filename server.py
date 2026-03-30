@@ -9,7 +9,7 @@ from typing import Set
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse
 from meshcore import MeshCore, EventType
 
 logging.basicConfig(
@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 connected_clients: Set[WebSocket] = set()
 
 # Set at startup from CLI args
-mc_host: str = "localhost"
-mc_port: int = 4000
+serial_port: str = ""
+serial_baud: int = 115200
 
 
 async def broadcast(message: dict) -> None:
@@ -39,11 +39,11 @@ async def broadcast(message: dict) -> None:
 
 
 async def meshcore_listener() -> None:
-    logger.info(f"Connecting to MeshCore at {mc_host}:{mc_port}")
+    logger.info(f"Connecting to MeshCore on {serial_port} at {serial_baud} baud")
     while True:
         try:
-            mc = await MeshCore.create_tcp(mc_host, mc_port, auto_reconnect=True)
-            logger.info("Connected to MeshCore")
+            mc = await MeshCore.create_serial(serial_port, serial_baud)
+            logger.info(f"Connected to MeshCore on {serial_port}")
 
             async def on_channel_msg(event) -> None:
                 payload = event.payload
@@ -121,10 +121,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="MeshCore Public Channel Web Viewer")
     parser.add_argument(
-        "--mc-host", default="localhost", help="MeshCore TCP host (default: localhost)"
+        "serial_port",
+        help="Serial port the MeshCore device is connected to (e.g. /dev/ttyUSB0)",
     )
     parser.add_argument(
-        "--mc-port", type=int, default=4000, help="MeshCore TCP port (default: 4000)"
+        "--baud", type=int, default=115200, help="Serial baud rate (default: 115200)"
     )
     parser.add_argument(
         "--host", default="0.0.0.0", help="Web server bind address (default: 0.0.0.0)"
@@ -134,7 +135,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    mc_host = args.mc_host
-    mc_port = args.mc_port
+    serial_port = args.serial_port
+    serial_baud = args.baud
 
     uvicorn.run(app, host=args.host, port=args.port)
