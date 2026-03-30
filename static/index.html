@@ -239,6 +239,7 @@
   }
 
   // ── State ────────────────────────────────────────────────────────────────
+  const seenIds = new Set();
   let lastDateLabel = null;
   let atBottom = true;
 
@@ -250,8 +251,11 @@
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
-  // ── Render a message ─────────────────────────────────────────────────────
+  // ── Render a message (skips duplicates) ─────────────────────────────────
   function addMessage(msg) {
+    if (seenIds.has(msg.id)) return;
+    seenIds.add(msg.id);
+
     const dateLabel = fmtDate(msg.timestamp);
 
     if (dateLabel !== lastDateLabel) {
@@ -314,9 +318,16 @@
     });
 
     ws.addEventListener("message", (evt) => {
-      let msg;
-      try { msg = JSON.parse(evt.data); } catch { return; }
-      if (msg.type === "message") addMessage(msg);
+      let packet;
+      try { packet = JSON.parse(evt.data); } catch { return; }
+      if (packet.type === "history") {
+        // Sort by timestamp then render in order, skipping any already shown
+        const sorted = [...packet.messages].sort((a, b) => a.timestamp - b.timestamp);
+        sorted.forEach(addMessage);
+        scrollToBottom();
+      } else if (packet.type === "message") {
+        addMessage(packet);
+      }
     });
 
     ws.addEventListener("close", () => {
