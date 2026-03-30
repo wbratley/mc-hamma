@@ -45,6 +45,9 @@ async def meshcore_listener() -> None:
             mc = await MeshCore.create_serial(serial_port, serial_baud)
             logger.info(f"Connected to MeshCore on {serial_port}")
 
+            async def on_any_event(event) -> None:
+                logger.info(f"EVENT [{event.type.name}] payload={event.payload!r} attrs={event.attributes!r}")
+
             async def on_channel_msg(event) -> None:
                 payload = event.payload
                 channel_idx = payload.get("channel_idx", 0)
@@ -70,6 +73,8 @@ async def meshcore_listener() -> None:
                 logger.info(f"Channel 0 message: {msg}")
                 await broadcast(msg)
 
+            # Subscribe to every event type for diagnostics
+            mc.subscribe(None, on_any_event)
             mc.subscribe(EventType.CHANNEL_MSG_RECV, on_channel_msg)
             await asyncio.sleep(float("inf"))
 
