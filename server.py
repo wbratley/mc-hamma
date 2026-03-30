@@ -2,8 +2,10 @@ import asyncio
 import argparse
 import json
 import logging
+from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from itertools import count
 from pathlib import Path
 from typing import Set
 
@@ -19,6 +21,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 connected_clients: Set[WebSocket] = set()
+message_buffer: deque = deque(maxlen=50)
+msg_id_counter = count(1)
 
 # Set at startup from CLI args
 serial_port: str = ""
@@ -62,6 +66,7 @@ async def meshcore_listener() -> None:
                 )
 
                 msg = {
+                    "id": next(msg_id_counter),
                     "type": "message",
                     "text": payload.get("text", ""),
                     "sender": payload.get(
@@ -70,6 +75,7 @@ async def meshcore_listener() -> None:
                     ),
                     "timestamp": ts,
                 }
+                message_buffer.append(msg)
                 logger.info(f"Channel 0 message: {msg}")
                 await broadcast(msg)
 
@@ -112,9 +118,12 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     connected_clients.add(websocket)
     logger.info(f"WebSocket client connected — total: {len(connected_clients)}")
     try:
+        # Send buffered history immediately so the client can catch up
+        if message_buffer:
+            await websocket.send_text(
+                json.dumps({"type": "history", "messages": list(message_buffer)})
+            )
         while True:
-            # We don't send anything from the browser, but we must keep the
-            # receive loop alive so FastAPI detects disconnects.
             await websocket.receive_text()
     except WebSocketDisconnect:
         pass
