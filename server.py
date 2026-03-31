@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 connected_clients: Set[WebSocket] = set()
 message_buffer: deque = deque(maxlen=50)
 msg_id_counter = count(1)
+channel_names: dict = {}  # channel_idx -> name, populated from CHANNEL_INFO events
 
 # Set at startup from CLI args
 serial_port: str = ""
@@ -52,14 +53,18 @@ async def meshcore_listener() -> None:
             async def on_any_event(event) -> None:
                 logger.info(f"EVENT [{event.type.name}] payload={event.payload!r} attrs={event.attributes!r}")
 
+            async def on_channel_info(event) -> None:
+                payload = event.payload
+                idx = payload.get("channel_idx")
+                name = payload.get("channel_name")
+                if idx is not None and name:
+                    channel_names[idx] = name
+                    logger.info(f"Channel {idx} name: {name!r}")
+
             async def on_channel_msg(event) -> None:
                 payload = event.payload
                 channel_idx = payload.get("channel_idx", 0)
-                if channel_idx != 0:
-                    return
 
-                # sender_timestamp is Unix seconds from the sender's clock;
-                # fall back to server wall-clock if absent.
                 ts = payload.get(
                     "sender_timestamp",
                     int(datetime.now(timezone.utc).timestamp()),
@@ -69,18 +74,17 @@ async def meshcore_listener() -> None:
                     "id": next(msg_id_counter),
                     "type": "message",
                     "text": payload.get("text", ""),
-                    "sender": payload.get(
-                        "sender",
-                        payload.get("pubkey_prefix", "Unknown"),
-                    ),
+                    "sender": payload.get("sender", payload.get("pubkey_prefix", "Unknown")),
                     "timestamp": ts,
+                    "channel_idx": channel_idx,
+                    "channel_name": channel_names.get(channel_idx),
                 }
                 message_buffer.append(msg)
-                logger.info(f"Channel 0 message: {msg}")
+                logger.info(f"Channel {channel_idx} message: {msg}")
                 await broadcast(msg)
 
-            # Subscribe to every event type for diagnostics
             mc.subscribe(None, on_any_event)
+            mc.subscribe(EventType.CHANNEL_INFO, on_channel_info)
             mc.subscribe(EventType.CHANNEL_MSG_RECV, on_channel_msg)
             await asyncio.sleep(float("inf"))
 
@@ -118,7 +122,19 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     connected_clients.add(websocket)
     logger.info(f"WebSocket client connected — total: {len(connected_clients)}")
     try:
-        # Send buffered history immediately so the client can catch up
+        # Send a test message so the client can confirm the WebSocket is working
+        test_msg = {
+            "id": 0,
+            "type": "message",
+            "text": f"WebSocket connected to {serial_port}",
+            "sender": "server",
+            "timestamp": int(datetime.now(timezone.utc).timestamp()),
+            "channel_idx": None,
+            "channel_name": "system",
+        }
+        await websocket.send_text(json.dumps(test_msg))
+
+        # Replay buffered history
         if message_buffer:
             await websocket.send_text(
                 json.dumps({"type": "history", "messages": list(message_buffer)})
@@ -133,7 +149,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="MeshCore Public Channel Web Viewer")
+    parser = argparse.ArgumentParser(description="MeshCore Channel Web Viewer")
     parser.add_argument(
         "serial_port",
         help="Serial port the MeshCore device is connected to (e.g. /dev/ttyUSB0)",
