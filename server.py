@@ -86,6 +86,11 @@ async def meshcore_listener() -> None:
             mc.subscribe(None, on_any_event)
             mc.subscribe(EventType.CHANNEL_INFO, on_channel_info)
             mc.subscribe(EventType.CHANNEL_MSG_RECV, on_channel_msg)
+
+            # Respond to MESSAGES_WAITING push notifications so the device
+            # delivers queued messages and fires CHANNEL_MSG_RECV / CONTACT_MSG_RECV.
+            await mc.start_auto_message_fetching()
+
             await asyncio.sleep(float("inf"))
 
         except asyncio.CancelledError:
