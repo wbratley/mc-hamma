@@ -246,7 +246,19 @@
       line-height: 1.5;
     }
 
-    .bubble .text { padding-right: 44px; }
+    .bubble .text { padding-right: 44px; line-height: 1.6; }
+
+    /* ── Mention pill (@[Name] → @Name) ── */
+    .mention {
+      display: inline-block;
+      background: rgba(79, 142, 247, 0.15);
+      color: var(--accent);
+      border-radius: 4px;
+      padding: 0 5px;
+      font-size: 0.88em;
+      font-weight: 600;
+      white-space: nowrap;
+    }
 
     .bubble .time {
       position: absolute;
@@ -462,6 +474,25 @@
     return el;
   }
 
+  // Render text with @[Name] patterns replaced by styled mention pills
+  function renderText(text) {
+    const span = document.createElement("span");
+    span.className = "text";
+    const parts = text.split(/(@\[[^\]]+\])/);
+    for (const part of parts) {
+      const m = part.match(/^@\[([^\]]+)\]$/);
+      if (m) {
+        const pill = document.createElement("span");
+        pill.className = "mention";
+        pill.textContent = "@" + m[1];
+        span.appendChild(pill);
+      } else if (part) {
+        span.appendChild(document.createTextNode(part));
+      }
+    }
+    return span;
+  }
+
   function buildBubble(msg) {
     const row = document.createElement("div");
     row.className = "bubble-row";
@@ -475,9 +506,7 @@
     const bubble = document.createElement("div");
     bubble.className = "bubble";
 
-    const textSpan = document.createElement("span");
-    textSpan.className = "text";
-    textSpan.textContent = msg.text;
+    const textSpan = renderText(msg.text);
 
     const timeSpan = document.createElement("span");
     timeSpan.className = "time";
