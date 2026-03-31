@@ -151,6 +151,88 @@
       text-align: center;
     }
 
+    /* ── Burger menu ── */
+    #burger-btn {
+      width: 36px; height: 36px;
+      background: none; border: none;
+      color: var(--text-muted); cursor: pointer;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 5px;
+      flex-shrink: 0; border-radius: 8px;
+      transition: background 0.15s;
+    }
+    #burger-btn:hover { background: var(--surface2); color: var(--text); }
+    #burger-btn span {
+      display: block; width: 18px; height: 2px;
+      background: currentColor; border-radius: 1px;
+    }
+
+    #nav-menu {
+      display: none; position: absolute;
+      top: calc(100% + 4px); right: 12px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 6px;
+      z-index: 200; box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+      min-width: 160px;
+    }
+    #nav-menu.open { display: block; }
+    .nav-item {
+      display: flex; align-items: center; gap: 10px;
+      width: 100%; padding: 9px 12px;
+      border: none; background: none; color: var(--text);
+      border-radius: 7px; cursor: pointer; font-size: 14px; text-align: left;
+    }
+    .nav-item:hover { background: var(--surface2); }
+    .nav-item.active { color: var(--accent); background: var(--accent-dim); }
+
+    /* ── Page visibility ── */
+    .page { display: none; flex: 1; flex-direction: column; overflow: hidden; }
+    .page.active { display: flex; }
+
+    /* ── Nodes page ── */
+    #page-nodes {
+      overflow-y: auto; padding: 16px;
+      gap: 12px; flex-direction: column;
+    }
+    #page-nodes::-webkit-scrollbar { width: 6px; }
+    #page-nodes::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    .node-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px; padding: 14px 16px;
+      display: flex; flex-direction: column; gap: 8px;
+    }
+    .node-name {
+      font-size: 15px; font-weight: 600;
+    }
+    .node-stats {
+      display: flex; gap: 10px; flex-wrap: wrap;
+    }
+    .node-stat {
+      display: flex; flex-direction: column;
+      background: var(--surface2); border-radius: 8px;
+      padding: 6px 10px; min-width: 80px;
+    }
+    .node-stat-label {
+      font-size: 10px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 2px;
+    }
+    .node-stat-value { font-size: 14px; font-weight: 600; }
+    .snr-good  { color: var(--status-ok); }
+    .snr-ok    { color: var(--status-warn); }
+    .snr-poor  { color: var(--status-err); }
+
+    .node-footer {
+      display: flex; align-items: center; justify-content: space-between;
+      font-size: 12px; color: var(--text-muted);
+    }
+    .map-link {
+      color: var(--accent); text-decoration: none; font-weight: 500;
+      display: flex; align-items: center; gap: 4px;
+    }
+    .map-link:hover { text-decoration: underline; }
+
     /* ── Status pill ── */
     #status {
       font-size: 12px;
@@ -371,17 +453,40 @@
   </div>
 
   <div id="status" class="disconnected">Disconnected</div>
+
+  <div style="position:relative">
+    <button id="burger-btn" aria-label="Menu">
+      <span></span><span></span><span></span>
+    </button>
+    <div id="nav-menu">
+      <button class="nav-item active" data-page="chat">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        Chat
+      </button>
+      <button class="nav-item" data-page="nodes">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="3"/><circle cx="5" cy="19" r="3"/><circle cx="19" cy="19" r="3"/><line x1="12" y1="8" x2="5.5" y2="16"/><line x1="12" y1="8" x2="18.5" y2="16"/></svg>
+        Nodes
+      </button>
+    </div>
+  </div>
 </header>
 
-<div id="messages"></div>
-
-<div id="compose">
+<div id="page-chat" class="page active">
+  <div id="messages"></div>
+  <div id="compose">
   <input id="msg-input" type="text" placeholder="Message…" disabled autocomplete="off" />
   <button id="send-btn" disabled aria-label="Send">
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
       <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
     </svg>
   </button>
+</div>
+</div><!-- end page-chat -->
+
+<div id="page-nodes" class="page">
+  <div id="nodes-list" style="padding:16px;display:flex;flex-direction:column;gap:12px;overflow-y:auto;flex:1">
+    <p style="color:var(--text-muted);font-size:14px;text-align:center;margin-top:40px">Waiting for node advertisements…</p>
+  </div>
 </div>
 
 <script>
@@ -680,6 +785,102 @@
     }
   }
 
+  // ── Burger / page nav ────────────────────────────────────────────────────
+  const burgerBtn = document.getElementById("burger-btn");
+  const navMenu   = document.getElementById("nav-menu");
+
+  burgerBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    navMenu.classList.toggle("open");
+  });
+  document.addEventListener("click", (e) => {
+    if (!navMenu.contains(e.target) && e.target !== burgerBtn)
+      navMenu.classList.remove("open");
+  });
+
+  navMenu.querySelectorAll(".nav-item").forEach(btn => {
+    btn.addEventListener("click", () => {
+      navMenu.classList.remove("open");
+      const page = btn.dataset.page;
+      document.querySelectorAll(".page").forEach(p => p.classList.remove("active"));
+      document.getElementById("page-" + page).classList.add("active");
+      navMenu.querySelectorAll(".nav-item").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+    });
+  });
+
+  // ── Node store & rendering ────────────────────────────────────────────────
+  const nodeMap  = new Map(); // key -> node data
+  const nodesEl  = document.getElementById("nodes-list");
+
+  function snrClass(snr) {
+    if (snr == null) return "";
+    if (snr >= -7)  return "snr-good";
+    if (snr >= -12) return "snr-ok";
+    return "snr-poor";
+  }
+
+  function fmtAgo(unix) {
+    const s = Math.floor(Date.now() / 1000) - unix;
+    if (s < 60)   return `${s}s ago`;
+    if (s < 3600) return `${Math.floor(s/60)}m ago`;
+    return `${Math.floor(s/3600)}h ago`;
+  }
+
+  function renderNodes() {
+    if (nodeMap.size === 0) {
+      nodesEl.innerHTML = '<p style="color:var(--text-muted);font-size:14px;text-align:center;margin-top:40px">Waiting for node advertisements…</p>';
+      return;
+    }
+    const sorted = [...nodeMap.values()].sort((a, b) => a.hops - b.hops);
+    nodesEl.innerHTML = "";
+    for (const n of sorted) {
+      const card = document.createElement("div");
+      card.className = "node-card";
+
+      const mapHref = (n.lat != null && n.lon != null)
+        ? `https://www.google.com/maps?q=${n.lat},${n.lon}`
+        : null;
+
+      card.innerHTML = `
+        <div class="node-name">${n.name}</div>
+        <div class="node-stats">
+          <div class="node-stat">
+            <span class="node-stat-label">Avg SNR</span>
+            <span class="node-stat-value ${snrClass(n.avg_snr)}">${n.avg_snr != null ? n.avg_snr + " dB" : "—"}</span>
+          </div>
+          <div class="node-stat">
+            <span class="node-stat-label">Avg RSSI</span>
+            <span class="node-stat-value">${n.avg_rssi != null ? n.avg_rssi + " dBm" : "—"}</span>
+          </div>
+          <div class="node-stat">
+            <span class="node-stat-label">Hops</span>
+            <span class="node-stat-value">${n.hops}</span>
+          </div>
+          <div class="node-stat">
+            <span class="node-stat-label">Samples</span>
+            <span class="node-stat-value">${n.sample_count}/5</span>
+          </div>
+        </div>
+        <div class="node-footer">
+          <span>${n.lat != null ? `${n.lat.toFixed(4)}, ${n.lon.toFixed(4)}` : "No position"}</span>
+          ${mapHref ? `<a class="map-link" href="${mapHref}" target="_blank" rel="noopener">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+            View on map</a>` : ""}
+        </div>
+        <div style="font-size:11px;color:var(--text-muted)">Last seen ${fmtAgo(n.last_seen)}</div>`;
+      nodesEl.appendChild(card);
+    }
+  }
+
+  function processNodeUpdate(n) {
+    nodeMap.set(n.key, n);
+    // Only re-render if the nodes page is active, to avoid wasted work
+    if (document.getElementById("page-nodes").classList.contains("active")) {
+      renderNodes();
+    }
+  }
+
   // ── WebSocket ────────────────────────────────────────────────────────────
   const WS_URL = `ws://${location.host}/ws`;
   let ws = null;
@@ -709,6 +910,10 @@
         sorted.forEach(processMessage);
       } else if (packet.type === "message") {
         processMessage(packet);
+      } else if (packet.type === "node_update") {
+        processNodeUpdate(packet);
+      } else if (packet.type === "nodes_snapshot") {
+        packet.nodes.forEach(processNodeUpdate);
       }
     });
 
