@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>MeshCore — Public Channel</title>
+  <title>MeshCore</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -13,7 +13,7 @@
       --surface2: #22263a;
       --border: #2e3250;
       --accent: #4f8ef7;
-      --accent-dim: #2a4a8a;
+      --accent-dim: #1e3370;
       --text: #e8eaf6;
       --text-muted: #7b82a8;
       --bubble-bg: #1e2235;
@@ -40,25 +40,118 @@
     header {
       background: var(--surface);
       border-bottom: 1px solid var(--border);
-      padding: 12px 20px;
+      padding: 10px 16px;
       display: flex;
       align-items: center;
-      gap: 12px;
+      gap: 10px;
       flex-shrink: 0;
       user-select: none;
     }
 
-    header h1 {
-      font-size: 16px;
+    .header-title {
+      font-size: 15px;
       font-weight: 600;
-      letter-spacing: 0.02em;
+      white-space: nowrap;
+    }
+
+    /* ── Channel picker ── */
+    .ch-picker-wrap {
+      position: relative;
       flex: 1;
     }
 
-    header h1 span {
+    #channel-btn {
+      width: 100%;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 6px 12px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      white-space: nowrap;
+      transition: border-color 0.15s;
+    }
+
+    #channel-btn:hover { border-color: var(--accent); }
+
+    #channel-btn .btn-label { flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; }
+
+    #channel-btn .btn-arrow {
+      font-size: 10px;
+      color: var(--text-muted);
+      transition: transform 0.15s;
+    }
+
+    #channel-btn.open .btn-arrow { transform: rotate(180deg); }
+
+    #channel-dropdown {
+      display: none;
+      position: absolute;
+      top: calc(100% + 6px);
+      left: 0;
+      right: 0;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 6px;
+      z-index: 100;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+      min-width: 180px;
+    }
+
+    #channel-dropdown.open { display: block; }
+
+    .ch-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      width: 100%;
+      padding: 9px 10px;
+      border: none;
+      background: transparent;
+      color: var(--text);
+      border-radius: 7px;
+      cursor: pointer;
+      font-size: 14px;
+      text-align: left;
+      gap: 8px;
+    }
+
+    .ch-item:hover { background: var(--surface2); }
+
+    .ch-item.active {
+      background: var(--accent-dim);
       color: var(--accent);
     }
 
+    .ch-name { flex: 1; }
+
+    .ch-badge {
+      background: var(--accent);
+      color: #fff;
+      border-radius: 10px;
+      padding: 1px 7px;
+      font-size: 11px;
+      font-weight: 700;
+      min-width: 22px;
+      text-align: center;
+      flex-shrink: 0;
+    }
+
+    .ch-empty {
+      padding: 10px;
+      color: var(--text-muted);
+      font-size: 13px;
+      text-align: center;
+    }
+
+    /* ── Status pill ── */
     #status {
       font-size: 12px;
       font-weight: 500;
@@ -67,6 +160,8 @@
       display: flex;
       align-items: center;
       gap: 6px;
+      white-space: nowrap;
+      flex-shrink: 0;
       transition: background 0.3s, color 0.3s;
     }
 
@@ -78,7 +173,7 @@
       flex-shrink: 0;
     }
 
-    #status.connected    { background: #0d2b1e; color: var(--status-ok);  }
+    #status.connected    { background: #0d2b1e; color: var(--status-ok); }
     #status.connected::before { background: var(--status-ok); box-shadow: 0 0 6px var(--status-ok); }
     #status.disconnected { background: #2a1010; color: var(--status-err); }
     #status.disconnected::before { background: var(--status-err); }
@@ -94,7 +189,7 @@
     #messages {
       flex: 1;
       overflow-y: auto;
-      padding: 20px 16px 12px;
+      padding: 16px 16px 12px;
       display: flex;
       flex-direction: column;
       gap: 10px;
@@ -105,8 +200,8 @@
     #messages::-webkit-scrollbar-track { background: transparent; }
     #messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 
-    /* ── Empty state ── */
-    #empty {
+    /* ── Empty / prompt states ── */
+    .msg-empty {
       flex: 1;
       display: flex;
       flex-direction: column;
@@ -117,19 +212,19 @@
       pointer-events: none;
     }
 
-    #empty svg { opacity: 0.25; }
-    #empty p { font-size: 14px; }
+    .msg-empty svg { opacity: 0.2; }
+    .msg-empty p { font-size: 14px; }
 
     /* ── Bubble ── */
     .bubble-row {
       display: flex;
       flex-direction: column;
       max-width: min(520px, 88%);
-      animation: fadeUp 0.2s ease;
+      animation: fadeUp 0.18s ease;
     }
 
     @keyframes fadeUp {
-      from { opacity: 0; transform: translateY(8px); }
+      from { opacity: 0; transform: translateY(6px); }
       to   { opacity: 1; transform: translateY(0); }
     }
 
@@ -151,9 +246,7 @@
       line-height: 1.5;
     }
 
-    .bubble .text {
-      padding-right: 44px; /* room for timestamp */
-    }
+    .bubble .text { padding-right: 44px; }
 
     .bubble .time {
       position: absolute;
@@ -164,29 +257,6 @@
       white-space: nowrap;
     }
 
-    .channel-tag {
-      display: inline-block;
-      font-size: 10px;
-      font-weight: 600;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-      color: var(--text-muted);
-      background: var(--surface2);
-      border: 1px solid var(--border);
-      border-radius: 4px;
-      padding: 1px 5px;
-      margin-bottom: 3px;
-      align-self: flex-start;
-    }
-
-    .bubble-row.system .bubble {
-      background: transparent;
-      border-color: var(--border);
-      border-style: dashed;
-      color: var(--text-muted);
-      font-size: 13px;
-    }
-
     /* ── Date separator ── */
     .date-sep {
       display: flex;
@@ -194,7 +264,7 @@
       gap: 10px;
       color: var(--text-muted);
       font-size: 12px;
-      margin: 6px 0;
+      margin: 4px 0;
     }
 
     .date-sep::before,
@@ -209,31 +279,33 @@
 <body>
 
 <header>
-  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0">
     <path d="M12 2a9 9 0 0 1 9 9c0 4.97-4.03 9-9 9a9 9 0 0 1-9-9 9 9 0 0 1 9-9z" opacity=".3"/>
     <path d="M12 6v6l4 2"/>
     <circle cx="12" cy="12" r="1" fill="var(--accent)" stroke="none"/>
-    <path d="M4.5 4.5l1.5 1.5M19.5 4.5l-1.5 1.5M4.5 19.5l1.5-1.5M19.5 19.5l-1.5-1.5"/>
   </svg>
-  <h1>MeshCore &mdash; <span>Public Channel</span></h1>
+  <span class="header-title">MeshCore</span>
+
+  <div class="ch-picker-wrap">
+    <button id="channel-btn" aria-haspopup="listbox" aria-expanded="false">
+      <span class="btn-label">Select channel…</span>
+      <span class="btn-arrow">▼</span>
+    </button>
+    <div id="channel-dropdown" role="listbox"></div>
+  </div>
+
   <div id="status" class="disconnected">Disconnected</div>
 </header>
 
-<div id="messages">
-  <div id="empty">
-    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-    </svg>
-    <p>Waiting for messages&hellip;</p>
-  </div>
-</div>
+<div id="messages"></div>
 
 <script>
-  const statusEl  = document.getElementById("status");
+  const statusEl   = document.getElementById("status");
   const messagesEl = document.getElementById("messages");
-  const emptyEl   = document.getElementById("empty");
+  const channelBtn = document.getElementById("channel-btn");
+  const dropdown   = document.getElementById("channel-dropdown");
 
-  // ── Colour palette for sender names (derived from name hash) ────────────
+  // ── Colour palette ───────────────────────────────────────────────────────
   const COLOURS = [
     "#6fa8ff", "#ff7e7e", "#6fcf97", "#f2c94c",
     "#bb86fc", "#56ccf2", "#f2994a", "#eb5757",
@@ -245,70 +317,160 @@
     return COLOURS[h % COLOURS.length];
   }
 
-  // ── Time formatting ──────────────────────────────────────────────────────
-  function fmtTime(unixSecs) {
-    const d = new Date(unixSecs * 1000);
-    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+  // ── Formatting ───────────────────────────────────────────────────────────
+  function fmtTime(unix) {
+    return new Date(unix * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
   }
 
-  function fmtDate(unixSecs) {
-    const d = new Date(unixSecs * 1000);
-    const today = new Date();
-    const yesterday = new Date(today);
-    yesterday.setDate(today.getDate() - 1);
+  function fmtDate(unix) {
+    const d = new Date(unix * 1000), today = new Date(), yest = new Date(today);
+    yest.setDate(today.getDate() - 1);
     if (d.toDateString() === today.toDateString()) return "Today";
-    if (d.toDateString() === yesterday.toDateString()) return "Yesterday";
+    if (d.toDateString() === yest.toDateString()) return "Yesterday";
     return d.toLocaleDateString([], { weekday: "long", month: "short", day: "numeric" });
   }
 
-  // ── State ────────────────────────────────────────────────────────────────
-  const seenIds = new Set();
-  let lastDateLabel = null;
-  let atBottom = true;
+  // ── Channel store ────────────────────────────────────────────────────────
+  // Map<channel_idx, { name, messages: [], unread: 0 }>
+  const channels = new Map();
+  let currentIdx = null;
+  const seenIds  = new Set();
+  let atBottom   = true;
 
   messagesEl.addEventListener("scroll", () => {
     atBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 60;
   });
 
-  function scrollToBottom() {
+  function getOrCreateChannel(idx, name) {
+    if (!channels.has(idx)) {
+      channels.set(idx, { name: name || `ch${idx}`, messages: [], unread: 0 });
+    } else if (name) {
+      channels.get(idx).name = name;
+    }
+    return channels.get(idx);
+  }
+
+  // ── Channel picker UI ────────────────────────────────────────────────────
+  function renderDropdown() {
+    dropdown.innerHTML = "";
+    if (channels.size === 0) {
+      dropdown.innerHTML = '<div class="ch-empty">No channels yet…</div>';
+      return;
+    }
+    const sorted = [...channels.entries()].sort((a, b) => a[0] - b[0]);
+    for (const [idx, ch] of sorted) {
+      const btn = document.createElement("button");
+      btn.className = "ch-item" + (idx === currentIdx ? " active" : "");
+      btn.setAttribute("role", "option");
+      btn.setAttribute("aria-selected", idx === currentIdx);
+
+      const nameEl = document.createElement("span");
+      nameEl.className = "ch-name";
+      nameEl.textContent = ch.name;
+      btn.appendChild(nameEl);
+
+      if (ch.unread > 0) {
+        const badge = document.createElement("span");
+        badge.className = "ch-badge";
+        badge.textContent = ch.unread;
+        btn.appendChild(badge);
+      }
+
+      btn.addEventListener("click", () => selectChannel(idx));
+      dropdown.appendChild(btn);
+    }
+  }
+
+  function updateChannelBtn() {
+    const label = channelBtn.querySelector(".btn-label");
+    if (currentIdx === null) {
+      label.textContent = "Select channel…";
+    } else {
+      const ch = channels.get(currentIdx);
+      label.textContent = ch ? ch.name : `ch${currentIdx}`;
+    }
+  }
+
+  // Toggle dropdown open/close
+  channelBtn.addEventListener("click", () => {
+    const open = dropdown.classList.toggle("open");
+    channelBtn.classList.toggle("open", open);
+    channelBtn.setAttribute("aria-expanded", open);
+    if (open) renderDropdown();
+  });
+
+  // Close dropdown on outside click
+  document.addEventListener("click", (e) => {
+    if (!channelBtn.contains(e.target) && !dropdown.contains(e.target)) {
+      dropdown.classList.remove("open");
+      channelBtn.classList.remove("open");
+      channelBtn.setAttribute("aria-expanded", false);
+    }
+  });
+
+  // ── Select a channel ─────────────────────────────────────────────────────
+  function selectChannel(idx) {
+    currentIdx = idx;
+    const ch = channels.get(idx);
+    if (ch) ch.unread = 0;
+    dropdown.classList.remove("open");
+    channelBtn.classList.remove("open");
+    channelBtn.setAttribute("aria-expanded", false);
+    updateChannelBtn();
+    renderDropdown();
+    renderMessages();
+  }
+
+  // ── Render all messages for the selected channel ─────────────────────────
+  function renderMessages() {
+    messagesEl.innerHTML = "";
+
+    if (currentIdx === null) {
+      messagesEl.appendChild(makeEmpty("Select a channel above to view messages"));
+      return;
+    }
+
+    const ch = channels.get(currentIdx);
+    if (!ch || ch.messages.length === 0) {
+      messagesEl.appendChild(makeEmpty("No messages yet"));
+      return;
+    }
+
+    let lastDate = null;
+    for (const msg of ch.messages) {
+      const dl = fmtDate(msg.timestamp);
+      if (dl !== lastDate) {
+        lastDate = dl;
+        const sep = document.createElement("div");
+        sep.className = "date-sep";
+        sep.textContent = dl;
+        messagesEl.appendChild(sep);
+      }
+      messagesEl.appendChild(buildBubble(msg));
+    }
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
-  // ── Render a message (skips duplicates) ─────────────────────────────────
-  function addMessage(msg) {
-    if (seenIds.has(msg.id)) return;
-    seenIds.add(msg.id);
+  function makeEmpty(text) {
+    const el = document.createElement("div");
+    el.className = "msg-empty";
+    el.innerHTML = `
+      <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+      </svg>
+      <p>${text}</p>`;
+    return el;
+  }
 
-    const isSystem = msg.channel_name === "system";
-    const dateLabel = fmtDate(msg.timestamp);
-
-    if (!isSystem && dateLabel !== lastDateLabel) {
-      lastDateLabel = dateLabel;
-      const sep = document.createElement("div");
-      sep.className = "date-sep";
-      sep.textContent = dateLabel;
-      messagesEl.appendChild(sep);
-    }
-
+  function buildBubble(msg) {
     const row = document.createElement("div");
-    row.className = isSystem ? "bubble-row system" : "bubble-row";
+    row.className = "bubble-row";
 
-    if (!isSystem) {
-      // Channel tag
-      const channelLabel = msg.channel_name || (msg.channel_idx != null ? `ch${msg.channel_idx}` : null);
-      if (channelLabel) {
-        const tag = document.createElement("span");
-        tag.className = "channel-tag";
-        tag.textContent = channelLabel;
-        row.appendChild(tag);
-      }
-
-      const senderDiv = document.createElement("div");
-      senderDiv.className = "sender";
-      senderDiv.textContent = msg.sender;
-      senderDiv.style.color = senderColour(msg.sender);
-      row.appendChild(senderDiv);
-    }
+    const senderDiv = document.createElement("div");
+    senderDiv.className = "sender";
+    senderDiv.textContent = msg.sender;
+    senderDiv.style.color = senderColour(msg.sender);
+    row.appendChild(senderDiv);
 
     const bubble = document.createElement("div");
     bubble.className = "bubble";
@@ -324,16 +486,72 @@
     bubble.appendChild(textSpan);
     bubble.appendChild(timeSpan);
     row.appendChild(bubble);
-
-    // Remove empty state on first message
-    if (emptyEl && emptyEl.parentNode) emptyEl.remove();
-
-    messagesEl.appendChild(row);
-
-    if (atBottom) scrollToBottom();
+    return row;
   }
 
-  // ── WebSocket with auto-reconnect ────────────────────────────────────────
+  // ── Process an incoming message ──────────────────────────────────────────
+  function processMessage(msg) {
+    // Skip system messages and anything without a real channel
+    if (msg.channel_idx == null || msg.channel_name === "system") return;
+    if (seenIds.has(msg.id)) return;
+    seenIds.add(msg.id);
+
+    const ch = getOrCreateChannel(msg.channel_idx, msg.channel_name);
+    ch.messages.push(msg);
+
+    if (msg.channel_idx === currentIdx) {
+      // Append to live view
+      const dl = fmtDate(msg.timestamp);
+      // Check if we need a date separator (compare against last rendered date)
+      const seps = messagesEl.querySelectorAll(".date-sep");
+      const lastSep = seps[seps.length - 1];
+      if (!lastSep || lastSep.textContent !== dl) {
+        const sep = document.createElement("div");
+        sep.className = "date-sep";
+        sep.textContent = dl;
+        messagesEl.appendChild(sep);
+      }
+      const bubble = buildBubble(msg);
+      // Only animate new live messages, not history replays
+      messagesEl.appendChild(bubble);
+      if (atBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
+    } else {
+      // Background channel: increment unread
+      ch.unread++;
+      // If this is the first message in any channel and nothing is selected, auto-select
+      if (currentIdx === null) {
+        selectChannel(msg.channel_idx);
+        return;
+      }
+    }
+
+    updateChannelBtn();
+    // Re-render dropdown to update unread badges (only if open)
+    if (dropdown.classList.contains("open")) renderDropdown();
+    // Update btn badge indicator: show total unread across non-selected channels
+    updateBtnBadge();
+  }
+
+  // Show a total unread dot on the button when dropdown is closed
+  function updateBtnBadge() {
+    let total = 0;
+    for (const [idx, ch] of channels) {
+      if (idx !== currentIdx) total += ch.unread;
+    }
+    let badge = channelBtn.querySelector(".ch-badge");
+    if (total > 0) {
+      if (!badge) {
+        badge = document.createElement("span");
+        badge.className = "ch-badge";
+        channelBtn.insertBefore(badge, channelBtn.querySelector(".btn-arrow"));
+      }
+      badge.textContent = total;
+    } else if (badge) {
+      badge.remove();
+    }
+  }
+
+  // ── WebSocket ────────────────────────────────────────────────────────────
   const WS_URL = `ws://${location.host}/ws`;
   let ws = null;
   let reconnectDelay = 1000;
@@ -356,12 +574,10 @@
       let packet;
       try { packet = JSON.parse(evt.data); } catch { return; }
       if (packet.type === "history") {
-        // Sort by timestamp then render in order, skipping any already shown
         const sorted = [...packet.messages].sort((a, b) => a.timestamp - b.timestamp);
-        sorted.forEach(addMessage);
-        scrollToBottom();
+        sorted.forEach(processMessage);
       } else if (packet.type === "message") {
-        addMessage(packet);
+        processMessage(packet);
       }
     });
 
@@ -372,11 +588,11 @@
       reconnectDelay = Math.min(reconnectDelay * 2, 16000);
     });
 
-    ws.addEventListener("error", () => {
-      ws.close();
-    });
+    ws.addEventListener("error", () => ws.close());
   }
 
+  // Initial empty state
+  renderMessages();
   connect();
 </script>
 </body>
