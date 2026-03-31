@@ -40,7 +40,7 @@ async def broadcast(message: dict) -> None:
             await ws.send_text(data)
         except Exception:
             dead.add(ws)
-    connected_clients -= dead
+    connected_clients.difference_update(dead)
 
 
 async def meshcore_listener() -> None:
