@@ -24,6 +24,7 @@ connected_clients: Set[WebSocket] = set()
 message_buffer: deque = deque(maxlen=50)
 msg_id_counter = count(1)
 channel_names: dict = {}  # channel_idx -> name, populated from CHANNEL_INFO events
+mc_instance = None         # active MeshCore connection, set by meshcore_listener
 
 # Set at startup from CLI args
 serial_port: str = ""
@@ -44,10 +45,12 @@ async def broadcast(message: dict) -> None:
 
 
 async def meshcore_listener() -> None:
+    global mc_instance
     logger.info(f"Connecting to MeshCore on {serial_port} at {serial_baud} baud")
     while True:
         try:
             mc = await MeshCore.create_serial(serial_port, serial_baud)
+            mc_instance = mc
             logger.info(f"Connected to MeshCore on {serial_port}")
 
             async def on_any_event(event) -> None:
@@ -112,7 +115,32 @@ async def meshcore_listener() -> None:
             break
         except Exception as exc:
             logger.error(f"MeshCore error: {exc} — retrying in 5 s")
+            mc_instance = None
             await asyncio.sleep(5)
+
+
+async def handle_send(packet: dict) -> None:
+    text = packet.get("text", "").strip()
+    channel_idx = packet.get("channel_idx", 0)
+    if not text or mc_instance is None:
+        return
+    try:
+        await mc_instance.commands.send_chan_msg(channel_idx, text)
+        msg = {
+            "id": next(msg_id_counter),
+            "type": "message",
+            "text": text,
+            "sender": "You",
+            "timestamp": int(datetime.now(timezone.utc).timestamp()),
+            "channel_idx": channel_idx,
+            "channel_name": channel_names.get(channel_idx),
+            "own": True,
+        }
+        message_buffer.append(msg)
+        logger.info(f"Sent on channel {channel_idx}: {text!r}")
+        await broadcast(msg)
+    except Exception as exc:
+        logger.error(f"Send failed: {exc}")
 
 
 @asynccontextmanager
@@ -160,7 +188,13 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 json.dumps({"type": "history", "messages": list(message_buffer)})
             )
         while True:
-            await websocket.receive_text()
+            data = await websocket.receive_text()
+            try:
+                packet = json.loads(data)
+            except Exception:
+                continue
+            if packet.get("type") == "send":
+                await handle_send(packet)
     except WebSocketDisconnect:
         pass
     finally:
