@@ -269,6 +269,70 @@
       white-space: nowrap;
     }
 
+    /* ── Own (sent) bubbles ── */
+    .bubble-row.own {
+      align-self: flex-end;
+      align-items: flex-end;
+    }
+
+    .bubble-row.own .sender {
+      padding-left: 0;
+      padding-right: 4px;
+      text-align: right;
+    }
+
+    .bubble-row.own .bubble {
+      background: #1a3a5c;
+      border-color: #2a5a8a;
+      border-bottom-left-radius: var(--radius);
+      border-bottom-right-radius: 4px;
+    }
+
+    /* ── Compose bar ── */
+    #compose {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px;
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    #msg-input {
+      flex: 1;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 22px;
+      padding: 10px 16px;
+      color: var(--text);
+      font-size: 15px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    #msg-input::placeholder { color: var(--text-muted); }
+    #msg-input:focus { border-color: var(--accent); }
+    #msg-input:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    #send-btn {
+      width: 42px;
+      height: 42px;
+      border-radius: 50%;
+      border: none;
+      background: var(--accent);
+      color: #fff;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      transition: background 0.15s, opacity 0.15s;
+    }
+
+    #send-btn:hover:not(:disabled) { background: #6aa0ff; }
+    #send-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
     /* ── Date separator ── */
     .date-sep {
       display: flex;
@@ -311,11 +375,22 @@
 
 <div id="messages"></div>
 
+<div id="compose">
+  <input id="msg-input" type="text" placeholder="Message…" disabled autocomplete="off" />
+  <button id="send-btn" disabled aria-label="Send">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+      <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
+    </svg>
+  </button>
+</div>
+
 <script>
   const statusEl   = document.getElementById("status");
   const messagesEl = document.getElementById("messages");
   const channelBtn = document.getElementById("channel-btn");
   const dropdown   = document.getElementById("channel-dropdown");
+  const msgInput   = document.getElementById("msg-input");
+  const sendBtn    = document.getElementById("send-btn");
 
   // ── Colour palette ───────────────────────────────────────────────────────
   const COLOURS = [
@@ -431,6 +506,7 @@
     updateChannelBtn();
     renderDropdown();
     renderMessages();
+    updateCompose();
   }
 
   // ── Render all messages for the selected channel ─────────────────────────
@@ -493,9 +569,33 @@
     return span;
   }
 
+  // ── Compose bar ─────────────────────────────────────────────────────────
+  let wsConnected = false;
+
+  function updateCompose() {
+    const enabled = wsConnected && currentIdx !== null;
+    msgInput.disabled = !enabled;
+    sendBtn.disabled  = !enabled;
+    msgInput.placeholder = !wsConnected ? "Not connected…"
+                         : currentIdx === null ? "Select a channel first…"
+                         : "Message…";
+  }
+
+  function sendMessage() {
+    const text = msgInput.value.trim();
+    if (!text || !wsConnected || currentIdx === null || !ws) return;
+    ws.send(JSON.stringify({ type: "send", channel_idx: currentIdx, text }));
+    msgInput.value = "";
+  }
+
+  sendBtn.addEventListener("click", sendMessage);
+  msgInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+  });
+
   function buildBubble(msg) {
     const row = document.createElement("div");
-    row.className = "bubble-row";
+    row.className = msg.own ? "bubble-row own" : "bubble-row";
 
     const senderDiv = document.createElement("div");
     senderDiv.className = "sender";
@@ -597,6 +697,8 @@
     ws.addEventListener("open", () => {
       setStatus("connected", "Connected");
       reconnectDelay = 1000;
+      wsConnected = true;
+      updateCompose();
     });
 
     ws.addEventListener("message", (evt) => {
@@ -612,6 +714,8 @@
 
     ws.addEventListener("close", () => {
       setStatus("disconnected", "Disconnected");
+      wsConnected = false;
+      updateCompose();
       ws = null;
       setTimeout(connect, reconnectDelay);
       reconnectDelay = Math.min(reconnectDelay * 2, 16000);
