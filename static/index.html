@@ -164,6 +164,29 @@
       white-space: nowrap;
     }
 
+    .channel-tag {
+      display: inline-block;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 1px 5px;
+      margin-bottom: 3px;
+      align-self: flex-start;
+    }
+
+    .bubble-row.system .bubble {
+      background: transparent;
+      border-color: var(--border);
+      border-style: dashed;
+      color: var(--text-muted);
+      font-size: 13px;
+    }
+
     /* ── Date separator ── */
     .date-sep {
       display: flex;
@@ -256,9 +279,10 @@
     if (seenIds.has(msg.id)) return;
     seenIds.add(msg.id);
 
+    const isSystem = msg.channel_name === "system";
     const dateLabel = fmtDate(msg.timestamp);
 
-    if (dateLabel !== lastDateLabel) {
+    if (!isSystem && dateLabel !== lastDateLabel) {
       lastDateLabel = dateLabel;
       const sep = document.createElement("div");
       sep.className = "date-sep";
@@ -267,12 +291,24 @@
     }
 
     const row = document.createElement("div");
-    row.className = "bubble-row";
+    row.className = isSystem ? "bubble-row system" : "bubble-row";
 
-    const senderDiv = document.createElement("div");
-    senderDiv.className = "sender";
-    senderDiv.textContent = msg.sender;
-    senderDiv.style.color = senderColour(msg.sender);
+    if (!isSystem) {
+      // Channel tag
+      const channelLabel = msg.channel_name || (msg.channel_idx != null ? `ch${msg.channel_idx}` : null);
+      if (channelLabel) {
+        const tag = document.createElement("span");
+        tag.className = "channel-tag";
+        tag.textContent = channelLabel;
+        row.appendChild(tag);
+      }
+
+      const senderDiv = document.createElement("div");
+      senderDiv.className = "sender";
+      senderDiv.textContent = msg.sender;
+      senderDiv.style.color = senderColour(msg.sender);
+      row.appendChild(senderDiv);
+    }
 
     const bubble = document.createElement("div");
     bubble.className = "bubble";
@@ -287,7 +323,6 @@
 
     bubble.appendChild(textSpan);
     bubble.appendChild(timeSpan);
-    row.appendChild(senderDiv);
     row.appendChild(bubble);
 
     // Remove empty state on first message
