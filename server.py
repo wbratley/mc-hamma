@@ -23,8 +23,9 @@ logger = logging.getLogger(__name__)
 connected_clients: Set[WebSocket] = set()
 message_buffer: deque = deque(maxlen=50)
 msg_id_counter = count(1)
-channel_names: dict = {}   # channel_idx -> name
-nodes: dict = {}           # adv_key -> node entry
+channel_names: dict = {}    # channel_idx -> name
+contacts: dict = {}         # full pubkey (hex) -> {name, lat, lon}
+neighbors: dict = {}        # last-hop hash (hex) -> neighbor entry
 mc_instance = None
 
 # Set at startup from CLI args
@@ -45,20 +46,28 @@ async def broadcast(message: dict) -> None:
     connected_clients.difference_update(dead)
 
 
-def serialize_node(node: dict) -> dict:
-    snr_hist  = list(node["snr_history"])
-    rssi_hist = list(node["rssi_history"])
+def find_contact(hop_hash: str) -> dict:
+    """Return the contact whose pubkey starts with hop_hash, or {}."""
+    for pubkey, c in contacts.items():
+        if pubkey.startswith(hop_hash):
+            return c
+    return {}
+
+
+def serialize_neighbor(n: dict) -> dict:
+    snr_hist  = list(n["snr_history"])
+    rssi_hist = list(n["rssi_history"])
+    contact   = find_contact(n["key"])
     return {
-        "type": "node_update",
-        "key": node["key"],
-        "name": node["name"],
-        "lat": node["lat"],
-        "lon": node["lon"],
-        "avg_snr":  round(sum(snr_hist)  / len(snr_hist),  1) if snr_hist  else None,
-        "avg_rssi": round(sum(rssi_hist) / len(rssi_hist), 1) if rssi_hist else None,
+        "type":         "neighbor_update",
+        "key":          n["key"],
+        "name":         contact.get("name") or n["key"],
+        "lat":          contact.get("lat"),
+        "lon":          contact.get("lon"),
+        "avg_snr":      round(sum(snr_hist)  / len(snr_hist),  1) if snr_hist  else None,
+        "avg_rssi":     round(sum(rssi_hist) / len(rssi_hist), 1) if rssi_hist else None,
         "sample_count": len(snr_hist),
-        "hops": node["hops"],
-        "last_seen": node["last_seen"],
+        "last_seen":    n["last_seen"],
     }
 
 
@@ -109,53 +118,62 @@ async def meshcore_listener() -> None:
                 logger.info(f"Channel {channel_idx} message from {sender!r}: {text!r}")
                 await broadcast(msg)
 
+            async def on_contact(event) -> None:
+                """Store contacts from CONTACTS / NEW_CONTACT / NEXT_CONTACT events."""
+                p = event.payload
+                # Payload may be a list (CONTACTS) or a single dict
+                entries = p if isinstance(p, list) else [p]
+                for c in entries:
+                    pubkey = c.get("public_key") or c.get("adv_key") or c.get("pubkey")
+                    name   = c.get("adv_name") or c.get("name")
+                    if pubkey and name:
+                        contacts[pubkey] = {
+                            "name": name,
+                            "lat":  c.get("adv_lat"),
+                            "lon":  c.get("adv_lon"),
+                        }
+                        logger.info(f"Contact: {name!r} key={pubkey[:12]}…")
+
             async def on_rx_log(event) -> None:
-                payload = event.payload
-                # Only interested in ADVERT packets (payload_type 4)
-                if payload.get("payload_type") != 4:
-                    return
-                key = payload.get("adv_key")
-                if not key:
-                    return
-
-                name = payload.get("adv_name") or key[:12]
-                lat  = payload.get("adv_lat")
-                lon  = payload.get("adv_lon")
-                snr  = payload.get("snr")
-                rssi = payload.get("rssi")
-
-                path_len       = payload.get("path_len", 0)
+                """Track the last-hop node on every received packet."""
+                payload        = event.payload
+                path           = payload.get("path", "")
                 path_hash_size = max(payload.get("path_hash_size", 1), 1)
-                hops = path_len // path_hash_size
+                snr            = payload.get("snr")
+                rssi           = payload.get("rssi")
 
-                if key not in nodes:
-                    nodes[key] = {
-                        "key":          key,
-                        "name":         name,
-                        "lat":          lat,
-                        "lon":          lon,
+                if not path or snr is None:
+                    return
+
+                # Last entry in path = the node that directly handed us the packet
+                chars_per_hop = path_hash_size * 2
+                hop_hash      = path[-chars_per_hop:]
+
+                if hop_hash not in neighbors:
+                    neighbors[hop_hash] = {
+                        "key":          hop_hash,
                         "snr_history":  deque(maxlen=5),
                         "rssi_history": deque(maxlen=5),
-                        "hops":         hops,
                         "last_seen":    0,
                     }
 
-                node = nodes[key]
-                node["name"] = name
-                if lat  is not None: node["lat"]  = lat
-                if lon  is not None: node["lon"]  = lon
-                if snr  is not None: node["snr_history"].append(snr)
-                if rssi is not None: node["rssi_history"].append(rssi)
-                node["hops"]      = hops
-                node["last_seen"] = int(datetime.now(timezone.utc).timestamp())
+                n = neighbors[hop_hash]
+                n["snr_history"].append(snr)
+                if rssi is not None:
+                    n["rssi_history"].append(rssi)
+                n["last_seen"] = int(datetime.now(timezone.utc).timestamp())
 
-                logger.info(f"Node seen: {name!r} hops={hops} snr={snr} rssi={rssi} lat={lat} lon={lon}")
-                await broadcast(serialize_node(node))
+                contact = find_contact(hop_hash)
+                logger.info(f"Last-hop {hop_hash!r} ({contact.get('name', '?')}) snr={snr} rssi={rssi}")
+                await broadcast(serialize_neighbor(n))
 
             mc.subscribe(None, on_any_event)
-            mc.subscribe(EventType.CHANNEL_INFO,    on_channel_info)
+            mc.subscribe(EventType.CHANNEL_INFO,     on_channel_info)
             mc.subscribe(EventType.CHANNEL_MSG_RECV, on_channel_msg)
             mc.subscribe(EventType.RX_LOG_DATA,      on_rx_log)
+            mc.subscribe(EventType.CONTACTS,         on_contact)
+            mc.subscribe(EventType.NEW_CONTACT,      on_contact)
+            mc.subscribe(EventType.NEXT_CONTACT,     on_contact)
 
             await mc.start_auto_message_fetching()
 
@@ -164,6 +182,12 @@ async def meshcore_listener() -> None:
                     await mc.commands.get_channel(idx)
                 except Exception:
                     pass
+
+            # Fetch contacts so we can resolve neighbor names
+            try:
+                await mc.commands.get_contacts()
+            except Exception:
+                pass
 
             await asyncio.sleep(float("inf"))
 
@@ -244,11 +268,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 json.dumps({"type": "history", "messages": list(message_buffer)})
             )
 
-        # Node snapshot
-        if nodes:
+        # Neighbor snapshot
+        if neighbors:
             await websocket.send_text(json.dumps({
-                "type": "nodes_snapshot",
-                "nodes": [serialize_node(n) for n in nodes.values()],
+                "type": "neighbors_snapshot",
+                "neighbors": [serialize_neighbor(n) for n in neighbors.values()],
             }))
 
         while True:

@@ -854,10 +854,6 @@
             <span class="node-stat-value">${n.avg_rssi != null ? n.avg_rssi + " dBm" : "—"}</span>
           </div>
           <div class="node-stat">
-            <span class="node-stat-label">Hops</span>
-            <span class="node-stat-value">${n.hops}</span>
-          </div>
-          <div class="node-stat">
             <span class="node-stat-label">Samples</span>
             <span class="node-stat-value">${n.sample_count}/5</span>
           </div>
@@ -910,10 +906,10 @@
         sorted.forEach(processMessage);
       } else if (packet.type === "message") {
         processMessage(packet);
-      } else if (packet.type === "node_update") {
+      } else if (packet.type === "neighbor_update") {
         processNodeUpdate(packet);
-      } else if (packet.type === "nodes_snapshot") {
-        packet.nodes.forEach(processNodeUpdate);
+      } else if (packet.type === "neighbors_snapshot") {
+        packet.neighbors.forEach(processNodeUpdate);
       }
     });
 
