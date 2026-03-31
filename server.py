@@ -70,17 +70,25 @@ async def meshcore_listener() -> None:
                     int(datetime.now(timezone.utc).timestamp()),
                 )
 
+                # Device encodes sender in text as "Name: message"
+                raw_text = payload.get("text", "")
+                if ": " in raw_text:
+                    sender, text = raw_text.split(": ", 1)
+                else:
+                    sender = payload.get("pubkey_prefix", "Unknown")
+                    text = raw_text
+
                 msg = {
                     "id": next(msg_id_counter),
                     "type": "message",
-                    "text": payload.get("text", ""),
-                    "sender": payload.get("sender", payload.get("pubkey_prefix", "Unknown")),
+                    "text": text,
+                    "sender": sender,
                     "timestamp": ts,
                     "channel_idx": channel_idx,
                     "channel_name": channel_names.get(channel_idx),
                 }
                 message_buffer.append(msg)
-                logger.info(f"Channel {channel_idx} message: {msg}")
+                logger.info(f"Channel {channel_idx} message from {sender!r}: {text!r}")
                 await broadcast(msg)
 
             mc.subscribe(None, on_any_event)
@@ -90,6 +98,13 @@ async def meshcore_listener() -> None:
             # Respond to MESSAGES_WAITING push notifications so the device
             # delivers queued messages and fires CHANNEL_MSG_RECV / CONTACT_MSG_RECV.
             await mc.start_auto_message_fetching()
+
+            # Request channel names from the device for indices 0–7
+            for idx in range(8):
+                try:
+                    await mc.commands.get_channel(idx)
+                except Exception:
+                    pass
 
             await asyncio.sleep(float("inf"))
 
