@@ -23,8 +23,9 @@ logger = logging.getLogger(__name__)
 connected_clients: Set[WebSocket] = set()
 message_buffer: deque = deque(maxlen=50)
 msg_id_counter = count(1)
-channel_names: dict = {}  # channel_idx -> name, populated from CHANNEL_INFO events
-mc_instance = None         # active MeshCore connection, set by meshcore_listener
+channel_names: dict = {}   # channel_idx -> name
+nodes: dict = {}           # adv_key -> node entry
+mc_instance = None
 
 # Set at startup from CLI args
 serial_port: str = ""
@@ -44,6 +45,23 @@ async def broadcast(message: dict) -> None:
     connected_clients.difference_update(dead)
 
 
+def serialize_node(node: dict) -> dict:
+    snr_hist  = list(node["snr_history"])
+    rssi_hist = list(node["rssi_history"])
+    return {
+        "type": "node_update",
+        "key": node["key"],
+        "name": node["name"],
+        "lat": node["lat"],
+        "lon": node["lon"],
+        "avg_snr":  round(sum(snr_hist)  / len(snr_hist),  1) if snr_hist  else None,
+        "avg_rssi": round(sum(rssi_hist) / len(rssi_hist), 1) if rssi_hist else None,
+        "sample_count": len(snr_hist),
+        "hops": node["hops"],
+        "last_seen": node["last_seen"],
+    }
+
+
 async def meshcore_listener() -> None:
     global mc_instance
     logger.info(f"Connecting to MeshCore on {serial_port} at {serial_baud} baud")
@@ -58,28 +76,25 @@ async def meshcore_listener() -> None:
 
             async def on_channel_info(event) -> None:
                 payload = event.payload
-                idx = payload.get("channel_idx")
+                idx  = payload.get("channel_idx")
                 name = payload.get("channel_name")
                 if idx is not None and name:
                     channel_names[idx] = name
                     logger.info(f"Channel {idx} name: {name!r}")
 
             async def on_channel_msg(event) -> None:
-                payload = event.payload
+                payload     = event.payload
                 channel_idx = payload.get("channel_idx", 0)
-
                 ts = payload.get(
                     "sender_timestamp",
                     int(datetime.now(timezone.utc).timestamp()),
                 )
-
-                # Device encodes sender in text as "Name: message"
                 raw_text = payload.get("text", "")
                 if ": " in raw_text:
                     sender, text = raw_text.split(": ", 1)
                 else:
                     sender = payload.get("pubkey_prefix", "Unknown")
-                    text = raw_text
+                    text   = raw_text
 
                 msg = {
                     "id": next(msg_id_counter),
@@ -94,15 +109,56 @@ async def meshcore_listener() -> None:
                 logger.info(f"Channel {channel_idx} message from {sender!r}: {text!r}")
                 await broadcast(msg)
 
-            mc.subscribe(None, on_any_event)
-            mc.subscribe(EventType.CHANNEL_INFO, on_channel_info)
-            mc.subscribe(EventType.CHANNEL_MSG_RECV, on_channel_msg)
+            async def on_rx_log(event) -> None:
+                payload = event.payload
+                # Only interested in ADVERT packets (payload_type 4)
+                if payload.get("payload_type") != 4:
+                    return
+                key = payload.get("adv_key")
+                if not key:
+                    return
 
-            # Respond to MESSAGES_WAITING push notifications so the device
-            # delivers queued messages and fires CHANNEL_MSG_RECV / CONTACT_MSG_RECV.
+                name = payload.get("adv_name") or key[:12]
+                lat  = payload.get("adv_lat")
+                lon  = payload.get("adv_lon")
+                snr  = payload.get("snr")
+                rssi = payload.get("rssi")
+
+                path_len       = payload.get("path_len", 0)
+                path_hash_size = max(payload.get("path_hash_size", 1), 1)
+                hops = path_len // path_hash_size
+
+                if key not in nodes:
+                    nodes[key] = {
+                        "key":          key,
+                        "name":         name,
+                        "lat":          lat,
+                        "lon":          lon,
+                        "snr_history":  deque(maxlen=5),
+                        "rssi_history": deque(maxlen=5),
+                        "hops":         hops,
+                        "last_seen":    0,
+                    }
+
+                node = nodes[key]
+                node["name"] = name
+                if lat  is not None: node["lat"]  = lat
+                if lon  is not None: node["lon"]  = lon
+                if snr  is not None: node["snr_history"].append(snr)
+                if rssi is not None: node["rssi_history"].append(rssi)
+                node["hops"]      = hops
+                node["last_seen"] = int(datetime.now(timezone.utc).timestamp())
+
+                logger.info(f"Node seen: {name!r} hops={hops} snr={snr} rssi={rssi} lat={lat} lon={lon}")
+                await broadcast(serialize_node(node))
+
+            mc.subscribe(None, on_any_event)
+            mc.subscribe(EventType.CHANNEL_INFO,    on_channel_info)
+            mc.subscribe(EventType.CHANNEL_MSG_RECV, on_channel_msg)
+            mc.subscribe(EventType.RX_LOG_DATA,      on_rx_log)
+
             await mc.start_auto_message_fetching()
 
-            # Request channel names from the device for indices 0–7
             for idx in range(8):
                 try:
                     await mc.commands.get_channel(idx)
@@ -120,7 +176,7 @@ async def meshcore_listener() -> None:
 
 
 async def handle_send(packet: dict) -> None:
-    text = packet.get("text", "").strip()
+    text        = packet.get("text", "").strip()
     channel_idx = packet.get("channel_idx", 0)
     if not text or mc_instance is None:
         return
@@ -170,7 +226,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     connected_clients.add(websocket)
     logger.info(f"WebSocket client connected — total: {len(connected_clients)}")
     try:
-        # Send a test message so the client can confirm the WebSocket is working
+        # Connect confirmation
         test_msg = {
             "id": 0,
             "type": "message",
@@ -182,11 +238,19 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         }
         await websocket.send_text(json.dumps(test_msg))
 
-        # Replay buffered history
+        # Message history
         if message_buffer:
             await websocket.send_text(
                 json.dumps({"type": "history", "messages": list(message_buffer)})
             )
+
+        # Node snapshot
+        if nodes:
+            await websocket.send_text(json.dumps({
+                "type": "nodes_snapshot",
+                "nodes": [serialize_node(n) for n in nodes.values()],
+            }))
+
         while True:
             data = await websocket.receive_text()
             try:
