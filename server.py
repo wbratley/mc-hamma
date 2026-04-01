@@ -27,6 +27,7 @@ channel_names: dict = {}    # channel_idx -> name
 contacts: dict = {}         # full pubkey (hex) -> {name, lat, lon}
 neighbors: dict = {}        # last-hop hash (hex) -> neighbor entry
 relay_windows: dict = {}    # channel_idx -> relay tracking entry
+_rx_scratch: dict = {}      # RX_LOG_DATA → CHANNEL_MSG_RECV correlation
 mc_instance = None
 
 RELAY_WINDOW_SECS = 20      # how long to listen for echoes after sending
@@ -108,6 +109,18 @@ async def meshcore_listener() -> None:
                     sender = payload.get("pubkey_prefix", "Unknown")
                     text   = raw_text
 
+                # Consume path info stashed by on_rx_log
+                rx = _rx_scratch.pop("last_grp_txt", {})
+                path_str       = rx.get("path", "")
+                path_hash_size = rx.get("path_hash_size", 1)
+                chars_per_hop  = path_hash_size * 2
+                path_nodes: list = []
+                if path_str:
+                    for i in range(0, len(path_str), chars_per_hop):
+                        h = path_str[i:i + chars_per_hop]
+                        c = find_contact(h)
+                        path_nodes.append({"hash": h, "name": c.get("name")})
+
                 msg = {
                     "id": next(msg_id_counter),
                     "type": "message",
@@ -116,6 +129,8 @@ async def meshcore_listener() -> None:
                     "timestamp": ts,
                     "channel_idx": channel_idx,
                     "channel_name": channel_names.get(channel_idx),
+                    "hops": len(path_nodes),
+                    "path": path_nodes,
                 }
                 message_buffer.append(msg)
                 logger.info(f"Channel {channel_idx} message from {sender!r}: {text!r}")
@@ -148,6 +163,13 @@ async def meshcore_listener() -> None:
 
                 if not path or snr is None:
                     return
+
+                # Stash path info for GRP_TXT so on_channel_msg can pick it up
+                if payload.get("payload_type") == 5:
+                    _rx_scratch["last_grp_txt"] = {
+                        "path": path,
+                        "path_hash_size": path_hash_size,
+                    }
 
                 # Last entry in path = the node that directly handed us the packet
                 chars_per_hop = path_hash_size * 2
