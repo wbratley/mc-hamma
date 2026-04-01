@@ -26,7 +26,10 @@ msg_id_counter = count(1)
 channel_names: dict = {}    # channel_idx -> name
 contacts: dict = {}         # full pubkey (hex) -> {name, lat, lon}
 neighbors: dict = {}        # last-hop hash (hex) -> neighbor entry
+relay_windows: dict = {}    # channel_idx -> relay tracking entry
 mc_instance = None
+
+RELAY_WINDOW_SECS = 20      # how long to listen for echoes after sending
 
 # Set at startup from CLI args
 serial_port: str = ""
@@ -135,12 +138,13 @@ async def meshcore_listener() -> None:
                         logger.info(f"Contact: {name!r} key={pubkey[:12]}…")
 
             async def on_rx_log(event) -> None:
-                """Track the last-hop node on every received packet."""
+                """Track last-hop neighbors and detect echoes of our sent messages."""
                 payload        = event.payload
                 path           = payload.get("path", "")
                 path_hash_size = max(payload.get("path_hash_size", 1), 1)
                 snr            = payload.get("snr")
                 rssi           = payload.get("rssi")
+                pkt_hash       = payload.get("pkt_hash")
 
                 if not path or snr is None:
                     return
@@ -148,6 +152,36 @@ async def meshcore_listener() -> None:
                 # Last entry in path = the node that directly handed us the packet
                 chars_per_hop = path_hash_size * 2
                 hop_hash      = path[-chars_per_hop:]
+
+                # ── Relay detection ──────────────────────────────────────────
+                # GRP_TXT (channel text) = payload_type 5
+                if payload.get("payload_type") == 5 and pkt_hash is not None:
+                    now = int(datetime.now(timezone.utc).timestamp())
+                    for ch_idx, win in list(relay_windows.items()):
+                        age = now - win["sent_at"]
+                        if age > RELAY_WINDOW_SECS:
+                            continue
+                        if win["pkt_hash"] is None:
+                            # First GRP_TXT after our send — assume it's our echo
+                            win["pkt_hash"] = pkt_hash
+                        if pkt_hash != win["pkt_hash"]:
+                            continue  # different message, skip
+                        if hop_hash not in win["relayers"]:
+                            win["relayers"].add(hop_hash)
+                            contact = find_contact(hop_hash)
+                            logger.info(
+                                f"Relay heard for msg {win['msg_id']}: "
+                                f"{contact.get('name', hop_hash)} ({hop_hash})"
+                            )
+                            await broadcast({
+                                "type":    "relay_update",
+                                "msg_id":  win["msg_id"],
+                                "relayers": [
+                                    {"key": h, "name": find_contact(h).get("name") or h}
+                                    for h in win["relayers"]
+                                ],
+                                "final": False,
+                            })
 
                 if hop_hash not in neighbors:
                     neighbors[hop_hash] = {
@@ -219,8 +253,36 @@ async def handle_send(packet: dict) -> None:
         message_buffer.append(msg)
         logger.info(f"Sent on channel {channel_idx}: {text!r}")
         await broadcast(msg)
+
+        # Open a relay-detection window for this channel
+        relay_windows[channel_idx] = {
+            "msg_id":   msg["id"],
+            "sent_at":  msg["timestamp"],
+            "pkt_hash": None,      # filled in when first echo arrives
+            "relayers": set(),
+        }
+        asyncio.create_task(_relay_timeout(channel_idx, msg["id"]))
     except Exception as exc:
         logger.error(f"Send failed: {exc}")
+
+
+async def _relay_timeout(channel_idx: int, msg_id: int) -> None:
+    await asyncio.sleep(RELAY_WINDOW_SECS)
+    win = relay_windows.pop(channel_idx, None)
+    if win and win["msg_id"] == msg_id:
+        relayers = [
+            {"key": h, "name": find_contact(h).get("name") or h}
+            for h in win["relayers"]
+        ]
+        logger.info(
+            f"Relay window closed for msg {msg_id}: {len(relayers)} relayer(s)"
+        )
+        await broadcast({
+            "type":     "relay_update",
+            "msg_id":   msg_id,
+            "relayers": relayers,
+            "final":    True,
+        })
 
 
 @asynccontextmanager

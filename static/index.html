@@ -370,6 +370,29 @@
       border-bottom-right-radius: 4px;
     }
 
+    /* ── Relay status ── */
+    .relay-row {
+      display: flex; align-items: center; flex-wrap: wrap;
+      gap: 5px; padding: 2px 4px;
+      font-size: 11px; color: var(--text-muted);
+      min-height: 20px;
+    }
+    .relay-label { white-space: nowrap; }
+    .relay-tag {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 4px; padding: 1px 6px;
+      font-size: 11px; color: var(--text);
+    }
+    .relay-none  { color: var(--status-err); }
+    .relay-ok    { color: var(--status-ok); }
+    .relay-waiting { font-style: italic; }
+    .retry-btn {
+      background: none; border: 1px solid var(--border);
+      color: var(--accent); border-radius: 4px;
+      padding: 1px 8px; font-size: 11px; cursor: pointer;
+    }
+    .retry-btn:hover { background: var(--accent-dim); }
+
     /* ── Compose bar ── */
     #compose {
       display: flex;
@@ -720,6 +743,15 @@
     bubble.appendChild(textSpan);
     bubble.appendChild(timeSpan);
     row.appendChild(bubble);
+
+    if (msg.own) {
+      const relayRow = document.createElement("div");
+      relayRow.className = "relay-row";
+      relayRows.set(msg.id, relayRow);
+      updateRelayRow(msg.id, [], false);
+      row.appendChild(relayRow);
+    }
+
     return row;
   }
 
@@ -808,6 +840,60 @@
       btn.classList.add("active");
     });
   });
+
+  // ── Relay tracking ───────────────────────────────────────────────────────
+  const relayRows = new Map(); // msg_id -> relay-row DOM element
+
+  function getRelayRow(msgId) { return relayRows.get(msgId); }
+
+  function updateRelayRow(msgId, relayers, final) {
+    const row = relayRows.get(msgId);
+    if (!row) return;
+    row.innerHTML = "";
+
+    if (!final && relayers.length === 0) {
+      const s = document.createElement("span");
+      s.className = "relay-label relay-waiting";
+      s.textContent = "Listening for relays…";
+      row.appendChild(s);
+      return;
+    }
+
+    if (relayers.length > 0) {
+      const lbl = document.createElement("span");
+      lbl.className = "relay-label relay-ok";
+      lbl.textContent = "↺";
+      row.appendChild(lbl);
+      for (const r of relayers) {
+        const tag = document.createElement("span");
+        tag.className = "relay-tag";
+        tag.textContent = r.name;
+        row.appendChild(tag);
+      }
+    } else if (final) {
+      const lbl = document.createElement("span");
+      lbl.className = "relay-label relay-none";
+      lbl.textContent = "No relay heard";
+      row.appendChild(lbl);
+
+      const btn = document.createElement("button");
+      btn.className = "retry-btn";
+      btn.textContent = "Retry";
+      btn.addEventListener("click", () => {
+        // Find the message text to resend
+        for (const [, ch] of channels) {
+          const m = ch.messages.find(x => x.id === msgId);
+          if (m && ws) {
+            ws.send(JSON.stringify({ type: "send", channel_idx: m.channel_idx, text: m.text }));
+            lbl.textContent = "Retrying…";
+            btn.remove();
+            break;
+          }
+        }
+      });
+      row.appendChild(btn);
+    }
+  }
 
   // ── Node store & rendering ────────────────────────────────────────────────
   const nodeMap  = new Map(); // key -> node data
@@ -906,6 +992,8 @@
         sorted.forEach(processMessage);
       } else if (packet.type === "message") {
         processMessage(packet);
+      } else if (packet.type === "relay_update") {
+        updateRelayRow(packet.msg_id, packet.relayers, packet.final);
       } else if (packet.type === "neighbor_update") {
         processNodeUpdate(packet);
       } else if (packet.type === "neighbors_snapshot") {
