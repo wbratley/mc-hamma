@@ -20,8 +20,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+HISTORY_FILE = Path("chat_history.json")
+HISTORY_MAX  = 1000
+
 connected_clients: Set[WebSocket] = set()
-message_buffer: deque = deque(maxlen=50)
+message_buffer: deque = deque(maxlen=HISTORY_MAX)
 msg_id_counter = count(1)
 channel_names: dict = {}    # channel_idx -> name
 contacts: dict = {}         # full pubkey (hex) -> {name, lat, lon}
@@ -35,6 +38,33 @@ RELAY_WINDOW_SECS = 20      # how long to listen for echoes after sending
 # Set at startup from CLI args
 serial_port: str = ""
 serial_baud: int = 115200
+
+
+def load_history() -> None:
+    """Populate message_buffer from disk and advance msg_id_counter past stored ids."""
+    global msg_id_counter
+    if not HISTORY_FILE.exists():
+        return
+    try:
+        msgs = json.loads(HISTORY_FILE.read_text())
+        if not isinstance(msgs, list):
+            return
+        for m in msgs[-HISTORY_MAX:]:
+            message_buffer.append(m)
+        if message_buffer:
+            max_id = max(m.get("id", 0) for m in message_buffer)
+            msg_id_counter = count(max_id + 1)
+        logger.info(f"Loaded {len(message_buffer)} messages from {HISTORY_FILE}")
+    except Exception as exc:
+        logger.warning(f"Could not load history: {exc}")
+
+
+def save_history() -> None:
+    """Write message_buffer to disk."""
+    try:
+        HISTORY_FILE.write_text(json.dumps(list(message_buffer)))
+    except Exception as exc:
+        logger.warning(f"Could not save history: {exc}")
 
 
 async def broadcast(message: dict) -> None:
@@ -133,6 +163,7 @@ async def meshcore_listener() -> None:
                     "path": path_nodes,
                 }
                 message_buffer.append(msg)
+                save_history()
                 logger.info(f"Channel {channel_idx} message from {sender!r}: {text!r}")
                 await broadcast(msg)
 
@@ -273,6 +304,7 @@ async def handle_send(packet: dict) -> None:
             "own": True,
         }
         message_buffer.append(msg)
+        save_history()
         logger.info(f"Sent on channel {channel_idx}: {text!r}")
         await broadcast(msg)
 
@@ -309,6 +341,7 @@ async def _relay_timeout(channel_idx: int, msg_id: int) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    load_history()
     task = asyncio.create_task(meshcore_listener())
     yield
     task.cancel()

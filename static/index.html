@@ -698,6 +698,12 @@
     renderDropdown();
     renderMessages();
     updateCompose();
+    // Always switch back to the chat page
+    document.querySelectorAll(".page").forEach(p => p.classList.remove("active"));
+    document.getElementById("page-chat").classList.add("active");
+    document.querySelectorAll(".nav-item").forEach(b => {
+      b.classList.toggle("active", b.dataset.page === "chat");
+    });
   }
 
   // ── Render all messages for the selected channel ─────────────────────────
@@ -909,7 +915,9 @@
       const relayRow = document.createElement("div");
       relayRow.className = "relay-row";
       relayRows.set(msg.id, relayRow);
-      updateRelayRow(msg.id, [], false);
+      msg.relayRowRef = relayRow;
+      // Restore relay state if already known (e.g. after channel switch re-render)
+      renderRelayRow(relayRow, msg.relayers || [], msg.relayFinal || false);
       row.appendChild(relayRow);
     }
 
@@ -1005,13 +1013,8 @@
   // ── Relay tracking ───────────────────────────────────────────────────────
   const relayRows = new Map(); // msg_id -> relay-row DOM element
 
-  function getRelayRow(msgId) { return relayRows.get(msgId); }
-
-  function updateRelayRow(msgId, relayers, final) {
-    const row = relayRows.get(msgId);
-    if (!row) return;
+  function renderRelayRow(row, relayers, final) {
     row.innerHTML = "";
-
     if (!final && relayers.length === 0) {
       const s = document.createElement("span");
       s.className = "relay-label relay-waiting";
@@ -1019,7 +1022,6 @@
       row.appendChild(s);
       return;
     }
-
     if (relayers.length > 0) {
       const lbl = document.createElement("span");
       lbl.className = "relay-label relay-ok";
@@ -1036,14 +1038,12 @@
       lbl.className = "relay-label relay-none";
       lbl.textContent = "No relay heard";
       row.appendChild(lbl);
-
       const btn = document.createElement("button");
       btn.className = "retry-btn";
       btn.textContent = "Retry";
       btn.addEventListener("click", () => {
-        // Find the message text to resend
         for (const [, ch] of channels) {
-          const m = ch.messages.find(x => x.id === msgId);
+          const m = ch.messages.find(x => x.relayRowRef === row);
           if (m && ws) {
             ws.send(JSON.stringify({ type: "send", channel_idx: m.channel_idx, text: m.text }));
             lbl.textContent = "Retrying…";
@@ -1054,6 +1054,16 @@
       });
       row.appendChild(btn);
     }
+  }
+
+  function updateRelayRow(msgId, relayers, final) {
+    // Update the stored message object so re-renders keep state
+    for (const [, ch] of channels) {
+      const m = ch.messages.find(x => x.id === msgId);
+      if (m) { m.relayers = relayers; m.relayFinal = final; break; }
+    }
+    const row = relayRows.get(msgId);
+    if (row) renderRelayRow(row, relayers, final);
   }
 
   // ── Node store & rendering ────────────────────────────────────────────────
