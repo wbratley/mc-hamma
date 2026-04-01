@@ -310,6 +310,49 @@
       to   { opacity: 1; transform: translateY(0); }
     }
 
+    /* ── Hop badge & path popup ── */
+    .hop-badge {
+      font-size: 10px;
+      font-weight: 400;
+      color: var(--text-secondary);
+      margin-left: 5px;
+      cursor: pointer;
+      user-select: none;
+      vertical-align: middle;
+    }
+    .hop-badge:hover { color: var(--accent); }
+
+    .hop-popup {
+      position: fixed;
+      background: var(--bubble-in);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 10px;
+      padding: 10px 14px;
+      font-size: 12px;
+      line-height: 1.8;
+      z-index: 999;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+      min-width: 140px;
+      max-width: 280px;
+      pointer-events: auto;
+    }
+    .hop-popup .pop-title {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      margin-bottom: 4px;
+    }
+    .hop-popup .pop-node {
+      display: flex; align-items: center; gap: 6px;
+    }
+    .hop-popup .pop-node-idx {
+      color: var(--text-secondary);
+      font-size: 10px;
+      min-width: 14px;
+    }
+    .hop-popup .pop-node-name { color: var(--text); }
+    .hop-popup .pop-node-hash { color: var(--text-secondary); font-family: monospace; }
+
     .sender {
       font-size: 12px;
       font-weight: 600;
@@ -698,6 +741,60 @@
     return el;
   }
 
+  // ── Hop-path popup ───────────────────────────────────────────────────────
+  let _hopPopup = null;
+
+  function showHopPopup(event, pathNodes) {
+    dismissHopPopup();
+
+    const pop = document.createElement("div");
+    pop.className = "hop-popup";
+
+    const title = document.createElement("div");
+    title.className = "pop-title";
+    title.textContent = "Relay path";
+    pop.appendChild(title);
+
+    pathNodes.forEach((node, i) => {
+      const row = document.createElement("div");
+      row.className = "pop-node";
+
+      const idx = document.createElement("span");
+      idx.className = "pop-node-idx";
+      idx.textContent = `${i + 1}.`;
+      row.appendChild(idx);
+
+      const label = document.createElement("span");
+      if (node.name) {
+        label.className = "pop-node-name";
+        label.textContent = node.name;
+      } else {
+        label.className = "pop-node-hash";
+        label.textContent = node.hash.slice(0, 8);
+      }
+      row.appendChild(label);
+      pop.appendChild(row);
+    });
+
+    // Position near the badge click
+    document.body.appendChild(pop);
+    const x = Math.min(event.clientX + 8, window.innerWidth  - pop.offsetWidth  - 12);
+    const y = Math.min(event.clientY + 8, window.innerHeight - pop.offsetHeight - 12);
+    pop.style.left = `${x}px`;
+    pop.style.top  = `${y}px`;
+
+    _hopPopup = pop;
+
+    // Dismiss on next click anywhere
+    setTimeout(() => {
+      document.addEventListener("click", dismissHopPopup, { once: true });
+    }, 0);
+  }
+
+  function dismissHopPopup() {
+    if (_hopPopup) { _hopPopup.remove(); _hopPopup = null; }
+  }
+
   // Render text with @[Name] patterns replaced by styled mention pills
   function renderText(text) {
     const span = document.createElement("span");
@@ -769,8 +866,24 @@
 
     const senderDiv = document.createElement("div");
     senderDiv.className = "sender";
-    senderDiv.textContent = msg.sender;
-    senderDiv.style.color = senderColour(msg.sender);
+
+    const senderName = document.createElement("span");
+    senderName.textContent = msg.sender;
+    senderName.style.color = senderColour(msg.sender);
+    senderDiv.appendChild(senderName);
+
+    if (!msg.own && msg.hops > 0 && msg.path && msg.path.length > 0) {
+      const badge = document.createElement("span");
+      badge.className = "hop-badge";
+      badge.textContent = `(${msg.hops})`;
+      badge.title = "Click to see relay path";
+      badge.addEventListener("click", (e) => {
+        e.stopPropagation();
+        showHopPopup(e, msg.path);
+      });
+      senderDiv.appendChild(badge);
+    }
+
     row.appendChild(senderDiv);
 
     const bubble = document.createElement("div");
