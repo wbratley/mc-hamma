@@ -324,8 +324,8 @@
 
     .hop-popup {
       position: fixed;
-      background: var(--bubble-in);
-      border: 1px solid rgba(255,255,255,0.08);
+      background: var(--surface);
+      border: 1px solid var(--border);
       border-radius: 10px;
       padding: 10px 14px;
       font-size: 12px;
@@ -875,7 +875,7 @@
     if (!msg.own && msg.hops > 0 && msg.path && msg.path.length > 0) {
       const badge = document.createElement("span");
       badge.className = "hop-badge";
-      badge.textContent = `(${msg.hops})`;
+      badge.textContent = `${msg.hops} hop${msg.hops !== 1 ? "s" : ""}`;
       badge.title = "Click to see relay path";
       badge.addEventListener("click", (e) => {
         e.stopPropagation();
