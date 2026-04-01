@@ -393,6 +393,22 @@
     }
     .retry-btn:hover { background: var(--accent-dim); }
 
+    /* ── Reply banner ── */
+    #reply-banner {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 6px 14px;
+      background: var(--accent-dim);
+      border-top: 1px solid var(--accent);
+      font-size: 13px; color: var(--accent);
+      flex-shrink: 0;
+    }
+    #reply-dismiss {
+      background: none; border: none; color: var(--accent);
+      cursor: pointer; font-size: 14px; padding: 0 0 0 8px; line-height: 1;
+      opacity: 0.7;
+    }
+    #reply-dismiss:hover { opacity: 1; }
+
     /* ── Compose bar ── */
     #compose {
       display: flex;
@@ -496,6 +512,10 @@
 
 <div id="page-chat" class="page active">
   <div id="messages"></div>
+  <div id="reply-banner" style="display:none">
+    <span id="reply-label"></span>
+    <button id="reply-dismiss" aria-label="Dismiss">✕</button>
+  </div>
   <div id="compose">
   <input id="msg-input" type="text" placeholder="Message…" disabled autocomplete="off" />
   <button id="send-btn" disabled aria-label="Send">
@@ -697,6 +717,26 @@
     return span;
   }
 
+  // ── Reply state ──────────────────────────────────────────────────────────
+  const replyBanner  = document.getElementById("reply-banner");
+  const replyLabel   = document.getElementById("reply-label");
+  const replyDismiss = document.getElementById("reply-dismiss");
+  let replyingTo = null;
+
+  function setReplyTo(sender) {
+    replyingTo = sender;
+    replyLabel.textContent = `Replying to ${sender}`;
+    replyBanner.style.display = "flex";
+    msgInput.focus();
+  }
+
+  function clearReply() {
+    replyingTo = null;
+    replyBanner.style.display = "none";
+  }
+
+  replyDismiss.addEventListener("click", clearReply);
+
   // ── Compose bar ─────────────────────────────────────────────────────────
   let wsConnected = false;
 
@@ -710,10 +750,12 @@
   }
 
   function sendMessage() {
-    const text = msgInput.value.trim();
-    if (!text || !wsConnected || currentIdx === null || !ws) return;
+    const raw = msgInput.value.trim();
+    if (!raw || !wsConnected || currentIdx === null || !ws) return;
+    const text = replyingTo ? `@[${replyingTo}] ${raw}` : raw;
     ws.send(JSON.stringify({ type: "send", channel_idx: currentIdx, text }));
     msgInput.value = "";
+    clearReply();
   }
 
   sendBtn.addEventListener("click", sendMessage);
@@ -743,6 +785,12 @@
     bubble.appendChild(textSpan);
     bubble.appendChild(timeSpan);
     row.appendChild(bubble);
+
+    // Tap to reply — skip own messages
+    if (!msg.own) {
+      row.style.cursor = "pointer";
+      row.addEventListener("click", () => setReplyTo(msg.sender));
+    }
 
     if (msg.own) {
       const relayRow = document.createElement("div");
