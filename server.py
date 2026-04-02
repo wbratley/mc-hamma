@@ -140,10 +140,25 @@ def build_contacts_snapshot() -> dict:
     }
 
 
+BUCKET_SECS  = 5 * 60          # 5-minute buckets
+HISTORY_SECS = 2 * 60 * 60    # 2 hours of history
+N_BUCKETS    = HISTORY_SECS // BUCKET_SECS   # 24 buckets
+
+
 def serialize_neighbor(n: dict) -> dict:
     snr_hist  = list(n["snr_history"])
     rssi_hist = list(n["rssi_history"])
     contact   = find_contact(n["key"])
+
+    # Build 24 time-series buckets (oldest → newest)
+    now    = int(datetime.now(timezone.utc).timestamp())
+    start  = now - HISTORY_SECS
+    counts = [0] * N_BUCKETS
+    for ts in n.get("msg_timestamps", []):
+        if ts >= start:
+            idx = min(int((ts - start) // BUCKET_SECS), N_BUCKETS - 1)
+            counts[idx] += 1
+
     return {
         "type":         "neighbor_update",
         "key":          n["key"],
@@ -152,7 +167,8 @@ def serialize_neighbor(n: dict) -> dict:
         "lon":          contact.get("lon"),
         "avg_snr":      round(sum(snr_hist)  / len(snr_hist),  1) if snr_hist  else None,
         "avg_rssi":     round(sum(rssi_hist) / len(rssi_hist), 1) if rssi_hist else None,
-        "sample_count": len(snr_hist),
+        "msg_count":    n.get("msg_count", 0),
+        "time_series":  counts,
         "last_seen":    n["last_seen"],
     }
 
@@ -297,17 +313,22 @@ async def meshcore_listener() -> None:
 
                 if hop_hash not in neighbors:
                     neighbors[hop_hash] = {
-                        "key":          hop_hash,
-                        "snr_history":  deque(maxlen=5),
-                        "rssi_history": deque(maxlen=5),
-                        "last_seen":    0,
+                        "key":            hop_hash,
+                        "snr_history":    deque(maxlen=5),
+                        "rssi_history":   deque(maxlen=5),
+                        "last_seen":      0,
+                        "msg_count":      0,
+                        "msg_timestamps": deque(maxlen=1500),  # ~2h at 1 pkt/5s
                     }
 
                 n = neighbors[hop_hash]
                 n["snr_history"].append(snr)
                 if rssi is not None:
                     n["rssi_history"].append(rssi)
-                n["last_seen"] = int(datetime.now(timezone.utc).timestamp())
+                now_ts = int(datetime.now(timezone.utc).timestamp())
+                n["last_seen"]   = now_ts
+                n["msg_count"]  += 1
+                n["msg_timestamps"].append(now_ts)
 
                 contact = find_contact(hop_hash)
                 logger.info(f"Last-hop {hop_hash!r} ({contact.get('name', '?')}) snr={snr} rssi={rssi}")
