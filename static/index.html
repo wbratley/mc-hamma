@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>MeshCore</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -24,7 +24,10 @@
       --radius: 16px;
     }
 
-    html, body { height: 100%; }
+    html {
+      height: 100%;
+      overflow: hidden;
+    }
 
     body {
       background: var(--bg);
@@ -33,7 +36,12 @@
       font-size: 15px;
       display: flex;
       flex-direction: column;
-      height: 100dvh;
+      /* position:fixed + inset:0 is the most reliable way to fill exactly
+         the visible viewport on mobile and prevent the page from scrolling
+         when the soft keyboard opens */
+      position: fixed;
+      inset: 0;
+      overflow: hidden;
     }
 
     /* ── Header ── */
@@ -41,6 +49,7 @@
       background: var(--surface);
       border-bottom: 1px solid var(--border);
       padding: 10px 16px;
+      padding-top: max(10px, env(safe-area-inset-top));
       display: flex;
       align-items: center;
       gap: 10px;
@@ -243,6 +252,7 @@
     #dm-messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
     #dm-compose {
       display: flex; gap: 8px; padding: 10px 12px;
+      padding-bottom: max(10px, env(safe-area-inset-bottom));
       background: var(--surface); border-top: 1px solid var(--border);
       flex-shrink: 0;
     }
@@ -582,6 +592,7 @@
       align-items: center;
       gap: 8px;
       padding: 10px 12px;
+      padding-bottom: max(10px, env(safe-area-inset-bottom));
       background: var(--surface);
       border-top: 1px solid var(--border);
       flex-shrink: 0;
