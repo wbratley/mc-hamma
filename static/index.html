@@ -1291,6 +1291,25 @@
     return `${Math.floor(s/3600)}h ago`;
   }
 
+  function buildSparkline(buckets) {
+    if (!buckets || buckets.length === 0) return "";
+    const W = 120, H = 28, PAD = 2;
+    const max = Math.max(...buckets, 1);
+    const n   = buckets.length;
+    const pts = buckets.map((v, i) => {
+      const x = PAD + (i / (n - 1)) * (W - PAD * 2);
+      const y = H - PAD - ((v / max) * (H - PAD * 2));
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    });
+    return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"
+      style="display:block;margin:4px 0 2px"
+      xmlns="http://www.w3.org/2000/svg">
+      <polyline points="${pts.join(" ")}"
+        fill="none" stroke="#4caf88" stroke-width="1.5"
+        stroke-linejoin="round" stroke-linecap="round"/>
+    </svg>`;
+  }
+
   function renderNodes() {
     if (nodeMap.size === 0) {
       nodesEl.innerHTML = '<p style="color:var(--text-muted);font-size:14px;text-align:center;margin-top:40px">Waiting for node advertisements…</p>';
@@ -1318,10 +1337,11 @@
             <span class="node-stat-value">${n.avg_rssi != null ? n.avg_rssi + " dBm" : "—"}</span>
           </div>
           <div class="node-stat">
-            <span class="node-stat-label">Samples</span>
-            <span class="node-stat-value">${n.sample_count}/5</span>
+            <span class="node-stat-label">Messages</span>
+            <span class="node-stat-value">${n.msg_count ?? 0}</span>
           </div>
         </div>
+        ${buildSparkline(n.time_series)}
         <div class="node-footer">
           <span>${n.lat != null ? `${n.lat.toFixed(4)}, ${n.lon.toFixed(4)}` : "No position"}</span>
           ${mapHref ? `<a class="map-link" href="${mapHref}" target="_blank" rel="noopener">
