@@ -32,6 +32,8 @@ msg_id_counter = count(1)
 channel_names: dict = {}    # channel_idx -> name
 contacts: dict = {}         # full pubkey (hex) -> {name, lat, lon, ...}
 contact_stats: dict = {}    # sender name (lower) -> {msg_count, last_chat}
+pending_contacts: dict = {} # pubkey -> full contact dict (seen but not yet added)
+autoadd_config: int = -1    # -1 = unknown; 0 = off; 1+ = on
 neighbors: dict = {}        # last-hop hash (hex) -> neighbor entry
 relay_windows: dict = {}    # channel_idx -> relay tracking entry
 _rx_scratch: dict = {}      # RX_LOG_DATA → CHANNEL_MSG_RECV correlation
@@ -170,6 +172,21 @@ def serialize_contact(pubkey: str, c: dict) -> dict:
         "chat_count":     stats.get("msg_count", 0),
         "lat":            c.get("lat"),
         "lon":            c.get("lon"),
+    }
+
+
+def serialize_pending(c: dict) -> dict:
+    now = int(datetime.now(timezone.utc).timestamp())
+    raw = c.get("last_advert")
+    return {
+        "pubkey":      c["public_key"],
+        "name":        c.get("adv_name") or c["public_key"][:12],
+        "node_type":   c.get("type"),
+        "node_type_name": NODE_TYPE_NAMES.get(c.get("type"), "Unknown"),
+        "out_path_len": c.get("out_path_len"),
+        "lat":         c.get("adv_lat"),
+        "lon":         c.get("adv_lon"),
+        "last_advert": min(raw, now) if raw else None,
     }
 
 
@@ -423,9 +440,34 @@ async def meshcore_listener() -> None:
             mc.subscribe(EventType.CHANNEL_MSG_RECV, on_channel_msg)
             mc.subscribe(EventType.CONTACT_MSG_RECV, on_contact_msg)
             mc.subscribe(EventType.RX_LOG_DATA,      on_rx_log)
+            async def on_new_contact_pending(event) -> None:
+                """NEW_CONTACT push = node heard but not yet in contacts list."""
+                global autoadd_config
+                c = event.payload
+                pubkey = c.get("public_key")
+                if not pubkey:
+                    return
+                # Only treat as pending if autoadd is off and not already a contact
+                if pubkey not in contacts and autoadd_config == 0:
+                    pending_contacts[pubkey] = c
+                    logger.info(f"Pending contact: {c.get('adv_name')!r} {pubkey[:12]}…")
+                    await broadcast({
+                        "type":    "pending_contact",
+                        "contact": serialize_pending(c),
+                    })
+                # Always update contacts list too (autoadd may have added it)
+                await on_contact(event)
+
+            async def on_autoadd_config(event) -> None:
+                global autoadd_config
+                autoadd_config = event.payload.get("config", -1)
+                logger.info(f"Autoadd config: {autoadd_config}")
+                await broadcast({"type": "autoadd_config", "value": autoadd_config})
+
             mc.subscribe(EventType.CONTACTS,         on_contact)
-            mc.subscribe(EventType.NEW_CONTACT,      on_contact)
+            mc.subscribe(EventType.NEW_CONTACT,      on_new_contact_pending)
             mc.subscribe(EventType.NEXT_CONTACT,     on_contact)
+            mc.subscribe(EventType.AUTOADD_CONFIG,   on_autoadd_config)
 
             await mc.start_auto_message_fetching()
 
@@ -441,6 +483,12 @@ async def meshcore_listener() -> None:
             except Exception:
                 pass
 
+            # Fetch autoadd config
+            try:
+                await mc.commands.get_autoadd_config()
+            except Exception:
+                pass
+
             await asyncio.sleep(float("inf"))
 
         except asyncio.CancelledError:
@@ -449,6 +497,76 @@ async def meshcore_listener() -> None:
             logger.error(f"MeshCore error: {exc} — retrying in 5 s")
             mc_instance = None
             await asyncio.sleep(5)
+
+
+async def handle_set_autoadd(packet: dict) -> None:
+    global autoadd_config
+    value = int(packet.get("value", 0))
+    if mc_instance is None:
+        return
+    try:
+        await mc_instance.commands.set_autoadd_config(value)
+        autoadd_config = value
+        logger.info(f"Autoadd set to {value}")
+        await broadcast({"type": "autoadd_config", "value": autoadd_config})
+    except Exception as exc:
+        logger.error(f"set_autoadd failed: {exc}")
+
+
+async def handle_add_contact(packet: dict) -> None:
+    pubkey = packet.get("pubkey", "")
+    if not pubkey or mc_instance is None:
+        return
+    c = pending_contacts.get(pubkey)
+    if not c:
+        logger.warning(f"add_contact: {pubkey[:12]} not in pending_contacts")
+        return
+    try:
+        await mc_instance.commands.add_contact(c)
+        # Move from pending to contacts
+        name = c.get("adv_name") or pubkey[:12]
+        contacts[pubkey] = {
+            "name":         name,
+            "lat":          c.get("adv_lat"),
+            "lon":          c.get("adv_lon"),
+            "node_type":    c.get("type"),
+            "out_path_len": c.get("out_path_len"),
+            "last_advert":  c.get("last_advert"),
+        }
+        del pending_contacts[pubkey]
+        logger.info(f"Added contact {name!r} {pubkey[:12]}…")
+        await broadcast(serialize_contact(pubkey, contacts[pubkey]))
+        await broadcast({"type": "pending_contact_removed", "pubkey": pubkey})
+    except Exception as exc:
+        logger.error(f"add_contact failed: {exc}")
+
+
+async def handle_remove_contact(packet: dict) -> None:
+    pubkey = packet.get("pubkey", "")
+    if not pubkey or mc_instance is None:
+        return
+    try:
+        await mc_instance.commands.remove_contact(pubkey)
+        contacts.pop(pubkey, None)
+        logger.info(f"Removed contact {pubkey[:12]}…")
+        await broadcast({"type": "contact_removed", "pubkey": pubkey[:12]})
+        await broadcast(build_contacts_snapshot())
+    except Exception as exc:
+        logger.error(f"remove_contact failed: {exc}")
+
+
+async def handle_purge_contacts() -> None:
+    if mc_instance is None:
+        return
+    keys = list(contacts.keys())
+    for pubkey in keys:
+        try:
+            await mc_instance.commands.remove_contact(pubkey)
+            contacts.pop(pubkey, None)
+        except Exception as exc:
+            logger.error(f"purge remove {pubkey[:12]}: {exc}")
+    logger.info(f"Purged {len(keys)} contacts")
+    await broadcast(build_contacts_snapshot())
 
 
 async def handle_send_dm(packet: dict) -> None:
@@ -602,6 +720,16 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         if contacts:
             await websocket.send_text(json.dumps(build_contacts_snapshot()))
 
+        # Autoadd config
+        await websocket.send_text(json.dumps({"type": "autoadd_config", "value": autoadd_config}))
+
+        # Pending contacts
+        if pending_contacts:
+            await websocket.send_text(json.dumps({
+                "type":     "pending_contacts_snapshot",
+                "contacts": [serialize_pending(c) for c in pending_contacts.values()],
+            }))
+
         # Neighbor snapshot
         if neighbors:
             await websocket.send_text(json.dumps({
@@ -619,6 +747,14 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 await handle_send(packet)
             elif packet.get("type") == "send_dm":
                 await handle_send_dm(packet)
+            elif packet.get("type") == "set_autoadd":
+                await handle_set_autoadd(packet)
+            elif packet.get("type") == "add_contact":
+                await handle_add_contact(packet)
+            elif packet.get("type") == "remove_contact":
+                await handle_remove_contact(packet)
+            elif packet.get("type") == "purge_contacts":
+                await handle_purge_contacts()
     except WebSocketDisconnect:
         pass
     finally:
