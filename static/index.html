@@ -260,6 +260,59 @@
     }
     #dm-send:disabled { opacity: 0.4; cursor: default; }
 
+    /* ── Contacts page ── */
+    #page-contacts {
+      flex-direction: column; overflow: hidden;
+    }
+    #contacts-toolbar {
+      display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+      padding: 10px 14px; background: var(--surface);
+      border-bottom: 1px solid var(--border); flex-shrink: 0;
+    }
+    #contacts-toolbar select, #contacts-toolbar input {
+      background: var(--surface2); border: 1px solid var(--border);
+      color: var(--text); border-radius: 6px; padding: 5px 8px;
+      font-size: 12px; outline: none;
+    }
+    #contacts-toolbar select:focus, #contacts-toolbar input:focus { border-color: var(--accent); }
+    #contacts-toolbar label { font-size: 12px; color: var(--text-secondary); }
+    #contacts-list {
+      flex: 1; overflow-y: auto; padding: 10px 14px;
+      display: flex; flex-direction: column; gap: 8px;
+    }
+    #contacts-list::-webkit-scrollbar { width: 6px; }
+    #contacts-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    .contact-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 10px 14px;
+      display: flex; align-items: center; gap: 12px;
+    }
+    .contact-avatar {
+      width: 38px; height: 38px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 15px; font-weight: 700; flex-shrink: 0;
+      background: var(--surface2);
+    }
+    .contact-body { flex: 1; min-width: 0; }
+    .contact-name { font-weight: 600; font-size: 14px; color: var(--text); }
+    .contact-meta {
+      display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px;
+    }
+    .contact-chip {
+      font-size: 11px; color: var(--text-secondary);
+      background: var(--surface2); border-radius: 4px;
+      padding: 1px 6px;
+    }
+    .contact-chip.type-repeater { color: #6fcf97; }
+    .contact-chip.type-gateway  { color: #f2c94c; }
+    .contact-chip.type-room     { color: #56ccf2; }
+    .contact-map { font-size: 12px; color: var(--accent); text-decoration: none; flex-shrink: 0; }
+    .contact-map:hover { text-decoration: underline; }
+    #contacts-empty {
+      color: var(--text-muted); font-size: 14px;
+      text-align: center; margin-top: 40px;
+    }
+
     /* ── Nodes page ── */
     #page-nodes {
       overflow-y: auto; padding: 16px;
@@ -620,6 +673,10 @@
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 9h8M8 13h6"/><path d="M3 5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H7l-4 4V5z"/></svg>
         Chats
       </button>
+      <button class="nav-item" data-page="contacts">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        Contacts
+      </button>
       <button class="nav-item" data-page="nodes">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="3"/><circle cx="5" cy="19" r="3"/><circle cx="19" cy="19" r="3"/><line x1="12" y1="8" x2="5.5" y2="16"/><line x1="12" y1="8" x2="18.5" y2="16"/></svg>
         Nodes
@@ -658,6 +715,46 @@
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
     </button>
   </div>
+</div>
+
+<div id="page-contacts" class="page">
+  <div id="contacts-toolbar">
+    <label>Sort:
+      <select id="contacts-sort">
+        <option value="name">Alphabetical</option>
+        <option value="last_advert">Last seen</option>
+        <option value="hops">Hop distance</option>
+      </select>
+    </label>
+    <label>Type:
+      <select id="filter-type">
+        <option value="">All types</option>
+        <option value="0">Client</option>
+        <option value="1">Repeater</option>
+        <option value="2">Room Server</option>
+        <option value="3">Gateway</option>
+      </select>
+    </label>
+    <label>Max hops:
+      <select id="filter-hops">
+        <option value="">Any</option>
+        <option value="0">Direct (0)</option>
+        <option value="1">≤ 1</option>
+        <option value="2">≤ 2</option>
+        <option value="3">≤ 3</option>
+        <option value="5">≤ 5</option>
+      </select>
+    </label>
+    <label>Last seen:
+      <select id="filter-seen">
+        <option value="">Any time</option>
+        <option value="3600">Last hour</option>
+        <option value="86400">Last 24h</option>
+        <option value="604800">Last week</option>
+      </select>
+    </label>
+  </div>
+  <div id="contacts-list"><p id="contacts-empty">Waiting for contacts…</p></div>
 </div>
 
 <div id="page-nodes" class="page">
@@ -1099,6 +1196,7 @@
       navMenu.querySelectorAll(".nav-item").forEach(b => b.classList.remove("active"));
       btn.classList.add("active");
       if (page === "chats") renderChatsList();
+      if (page === "contacts") renderContacts();
     });
   });
 
@@ -1225,6 +1323,130 @@
       renderNodes();
     }
   }
+
+  // ── Contacts page ────────────────────────────────────────────────────────
+  const contactsMap    = new Map(); // key(12-char prefix) → contact data
+  const contactsListEl = document.getElementById("contacts-list");
+  const sortSelect     = document.getElementById("contacts-sort");
+  const filterType     = document.getElementById("filter-type");
+  const filterHops     = document.getElementById("filter-hops");
+  const filterSeen     = document.getElementById("filter-seen");
+
+  function processContactUpdate(c) {
+    contactsMap.set(c.key, c);
+    if (document.getElementById("page-contacts").classList.contains("active"))
+      renderContacts();
+  }
+
+  function renderContacts() {
+    const sortBy    = sortSelect.value;
+    const typeVal   = filterType.value;
+    const maxHops   = filterHops.value !== "" ? parseInt(filterHops.value) : null;
+    const maxAge    = filterSeen.value !== "" ? parseInt(filterSeen.value) : null;
+    const nowSec    = Math.floor(Date.now() / 1000);
+
+    let items = [...contactsMap.values()];
+
+    // Filter
+    if (typeVal !== "")  items = items.filter(c => String(c.node_type) === typeVal);
+    if (maxHops !== null) items = items.filter(c => {
+      const h = c.out_path_len;
+      if (h == null || h === -1) return false;
+      return h <= maxHops;
+    });
+    if (maxAge !== null) items = items.filter(c =>
+      c.last_advert != null && (nowSec - c.last_advert) <= maxAge
+    );
+
+    // Sort
+    if (sortBy === "name") {
+      items.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+    } else if (sortBy === "last_advert") {
+      items.sort((a, b) => (b.last_advert || 0) - (a.last_advert || 0));
+    } else if (sortBy === "hops") {
+      items.sort((a, b) => {
+        const ha = a.out_path_len == null || a.out_path_len === -1 ? 999 : a.out_path_len;
+        const hb = b.out_path_len == null || b.out_path_len === -1 ? 999 : b.out_path_len;
+        return ha - hb;
+      });
+    }
+
+    contactsListEl.innerHTML = "";
+    if (items.length === 0) {
+      contactsListEl.innerHTML = '<p id="contacts-empty">No contacts match the filter</p>';
+      return;
+    }
+
+    for (const c of items) {
+      const card = document.createElement("div");
+      card.className = "contact-card";
+
+      const avatar = document.createElement("div");
+      avatar.className = "contact-avatar";
+      avatar.style.color = senderColour(c.name);
+      avatar.textContent = (c.name || "?").charAt(0).toUpperCase();
+      card.appendChild(avatar);
+
+      const body = document.createElement("div");
+      body.className = "contact-body";
+
+      const nameEl = document.createElement("div");
+      nameEl.className = "contact-name";
+      nameEl.textContent = c.name;
+      body.appendChild(nameEl);
+
+      const meta = document.createElement("div");
+      meta.className = "contact-meta";
+
+      // Node type chip
+      if (c.node_type_name) {
+        const typeChip = document.createElement("span");
+        typeChip.className = "contact-chip" + (
+          c.node_type === 1 ? " type-repeater" :
+          c.node_type === 3 ? " type-gateway"  :
+          c.node_type === 2 ? " type-room"     : ""
+        );
+        typeChip.textContent = c.node_type_name;
+        meta.appendChild(typeChip);
+      }
+
+      // Hop distance
+      const hopsChip = document.createElement("span");
+      hopsChip.className = "contact-chip";
+      if (c.out_path_len === -1) hopsChip.textContent = "flood";
+      else if (c.out_path_len != null) hopsChip.textContent = `${c.out_path_len} hop${c.out_path_len !== 1 ? "s" : ""}`;
+      else hopsChip.textContent = "hops unknown";
+      meta.appendChild(hopsChip);
+
+      // Last seen
+      if (c.last_advert) {
+        const seenChip = document.createElement("span");
+        seenChip.className = "contact-chip";
+        seenChip.textContent = "seen " + fmtAgo(c.last_advert);
+        meta.appendChild(seenChip);
+      }
+
+      body.appendChild(meta);
+      card.appendChild(body);
+
+      // Map link
+      if (c.lat != null && c.lon != null && (c.lat !== 0 || c.lon !== 0)) {
+        const mapLink = document.createElement("a");
+        mapLink.className = "contact-map";
+        mapLink.href = `https://www.google.com/maps?q=${c.lat},${c.lon}`;
+        mapLink.target = "_blank";
+        mapLink.rel = "noopener";
+        mapLink.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg> Map`;
+        card.appendChild(mapLink);
+      }
+
+      contactsListEl.appendChild(card);
+    }
+  }
+
+  [sortSelect, filterType, filterHops, filterSeen].forEach(el =>
+    el.addEventListener("change", renderContacts)
+  );
 
   // ── DM / Chats ───────────────────────────────────────────────────────────
   const dmChats      = new Map(); // contact_key → {name, messages[], unread, lastTs}
@@ -1444,6 +1666,10 @@
         processDm(packet);
       } else if (packet.type === "dm_history") {
         packet.messages.forEach(processDm);
+      } else if (packet.type === "contact_update") {
+        processContactUpdate(packet);
+      } else if (packet.type === "contacts_snapshot") {
+        packet.contacts.forEach(processContactUpdate);
       }
     });
 
