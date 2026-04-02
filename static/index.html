@@ -195,7 +195,11 @@
     .nav-item.active { color: var(--accent); background: var(--accent-dim); }
 
     /* ── Page visibility ── */
-    .page { display: none; flex: 1; flex-direction: column; overflow: hidden; }
+    /* min-height:0 is critical: flex items default to min-height:auto,
+       meaning they grow to fit content and never let overflow-y:auto
+       activate on the scroll child. Setting it to 0 allows the flex
+       item to shrink below its content size so the inner scroll works. */
+    .page { display: none; flex: 1; min-height: 0; flex-direction: column; overflow: hidden; }
     .page.active { display: flex; }
 
     /* ── Chats list page ── */
@@ -245,7 +249,7 @@
     }
     #dm-contact-name { font-weight: 600; font-size: 15px; }
     #dm-messages {
-      flex: 1; overflow-y: auto; padding: 12px 16px;
+      flex: 1; min-height: 0; overflow-y: auto; padding: 12px 16px;
       display: flex; flex-direction: column; gap: 4px;
     }
     #dm-messages::-webkit-scrollbar { width: 6px; }
@@ -287,7 +291,7 @@
     #contacts-toolbar select:focus, #contacts-toolbar input:focus { border-color: var(--accent); }
     #contacts-toolbar label { font-size: 12px; color: var(--text-secondary); }
     #contacts-list {
-      flex: 1; overflow-y: auto; padding: 10px 14px;
+      flex: 1; min-height: 0; overflow-y: auto; padding: 10px 14px;
       display: flex; flex-direction: column; gap: 8px;
     }
     #contacts-list::-webkit-scrollbar { width: 6px; }
@@ -404,6 +408,7 @@
     /* ── Message list ── */
     #messages {
       flex: 1;
+      min-height: 0;
       overflow-y: auto;
       padding: 16px 16px 12px;
       display: flex;
@@ -769,7 +774,7 @@
 </div>
 
 <div id="page-nodes" class="page">
-  <div id="nodes-list" style="padding:16px;display:flex;flex-direction:column;gap:12px;overflow-y:auto;flex:1">
+  <div id="nodes-list" style="padding:16px;display:flex;flex-direction:column;gap:12px;overflow-y:auto;flex:1;min-height:0">
     <p style="color:var(--text-muted);font-size:14px;text-align:center;margin-top:40px">Waiting for node advertisements…</p>
   </div>
 </div>
