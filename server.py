@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 HISTORY_FILE = Path("chat_history.json")
 DM_HISTORY_DIR = Path("dm_history")
+CONTACT_STATS_FILE = Path("contact_stats.json")
 HISTORY_MAX  = 1000
 
 connected_clients: Set[WebSocket] = set()
@@ -29,7 +30,8 @@ message_buffer: deque = deque(maxlen=HISTORY_MAX)
 dm_buffers: dict = {}           # pubkey_prefix -> deque(maxlen=1000) of DM messages
 msg_id_counter = count(1)
 channel_names: dict = {}    # channel_idx -> name
-contacts: dict = {}         # full pubkey (hex) -> {name, lat, lon}
+contacts: dict = {}         # full pubkey (hex) -> {name, lat, lon, ...}
+contact_stats: dict = {}    # sender name (lower) -> {msg_count, last_chat}
 neighbors: dict = {}        # last-hop hash (hex) -> neighbor entry
 relay_windows: dict = {}    # channel_idx -> relay tracking entry
 _rx_scratch: dict = {}      # RX_LOG_DATA → CHANNEL_MSG_RECV correlation
@@ -116,20 +118,58 @@ def find_contact(hop_hash: str) -> dict:
     return {}
 
 
+def find_pubkey_by_name(name: str) -> str | None:
+    """Return the pubkey for a contact with the given name, or None."""
+    nl = name.lower()
+    for pubkey, c in contacts.items():
+        if (c.get("name") or "").lower() == nl:
+            return pubkey
+    return None
+
+
+def load_contact_stats() -> None:
+    if not CONTACT_STATS_FILE.exists():
+        return
+    try:
+        data = json.loads(CONTACT_STATS_FILE.read_text())
+        if isinstance(data, dict):
+            contact_stats.update(data)
+        logger.info(f"Loaded stats for {len(contact_stats)} contacts")
+    except Exception as exc:
+        logger.warning(f"Could not load contact stats: {exc}")
+
+
+def save_contact_stats() -> None:
+    try:
+        CONTACT_STATS_FILE.write_text(json.dumps(contact_stats))
+    except Exception as exc:
+        logger.warning(f"Could not save contact stats: {exc}")
+
+
 NODE_TYPE_NAMES = {0: "Client", 1: "Repeater", 2: "Room Server", 3: "Gateway"}
 
 
 def serialize_contact(pubkey: str, c: dict) -> dict:
+    now = int(datetime.now(timezone.utc).timestamp())
+    raw_advert = c.get("last_advert")
+    # Cap future timestamps — device clocks can be wrong
+    last_advert = min(raw_advert, now) if raw_advert else None
+
+    name = c.get("name") or pubkey[:12]
+    stats = contact_stats.get(name.lower(), {})
+
     return {
-        "type":         "contact_update",
-        "key":          pubkey[:12],
-        "name":         c.get("name") or pubkey[:12],
-        "node_type":    c.get("node_type"),
+        "type":           "contact_update",
+        "key":            pubkey[:12],
+        "name":           name,
+        "node_type":      c.get("node_type"),
         "node_type_name": NODE_TYPE_NAMES.get(c.get("node_type"), "Unknown"),
-        "out_path_len": c.get("out_path_len"),
-        "last_advert":  c.get("last_advert"),
-        "lat":          c.get("lat"),
-        "lon":          c.get("lon"),
+        "out_path_len":   c.get("out_path_len"),
+        "last_advert":    last_advert,
+        "last_chat":      stats.get("last_chat"),
+        "chat_count":     stats.get("msg_count", 0),
+        "lat":            c.get("lat"),
+        "lon":            c.get("lon"),
     }
 
 
@@ -232,6 +272,20 @@ async def meshcore_listener() -> None:
                 }
                 message_buffer.append(msg)
                 save_history()
+
+                # Update per-contact chat stats
+                key = sender.lower()
+                if key not in contact_stats:
+                    contact_stats[key] = {"msg_count": 0, "last_chat": None}
+                contact_stats[key]["msg_count"] += 1
+                contact_stats[key]["last_chat"] = ts
+                save_contact_stats()
+
+                # Broadcast updated contact card if we know this contact
+                pubkey = find_pubkey_by_name(sender)
+                if pubkey and pubkey in contacts:
+                    await broadcast(serialize_contact(pubkey, contacts[pubkey]))
+
                 logger.info(f"Channel {channel_idx} message from {sender!r}: {text!r}")
                 await broadcast(msg)
 
@@ -484,6 +538,7 @@ async def _relay_timeout(channel_idx: int, msg_id: int) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     load_history()
+    load_contact_stats()
     # Pre-load any saved per-contact DM history
     if DM_HISTORY_DIR.exists():
         for f in DM_HISTORY_DIR.glob("*.json"):
