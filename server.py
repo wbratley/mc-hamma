@@ -441,22 +441,26 @@ async def meshcore_listener() -> None:
             mc.subscribe(EventType.CONTACT_MSG_RECV, on_contact_msg)
             mc.subscribe(EventType.RX_LOG_DATA,      on_rx_log)
             async def on_new_contact_pending(event) -> None:
-                """NEW_CONTACT push = node heard but not yet in contacts list."""
+                """NEW_CONTACT push = node heard (PUSH_CODE_NEW_ADVERT).
+                If autoadd is off, the device won't save it — treat as pending.
+                If autoadd is on, the device saved it — add to our local contacts."""
                 global autoadd_config
                 c = event.payload
                 pubkey = c.get("public_key")
                 if not pubkey:
                     return
-                # Only treat as pending if autoadd is off and not already a contact
-                if pubkey not in contacts and autoadd_config == 0:
-                    pending_contacts[pubkey] = c
-                    logger.info(f"Pending contact: {c.get('adv_name')!r} {pubkey[:12]}…")
-                    await broadcast({
-                        "type":    "pending_contact",
-                        "contact": serialize_pending(c),
-                    })
-                # Always update contacts list too (autoadd may have added it)
-                await on_contact(event)
+                if autoadd_config == 0:
+                    # Device won't auto-save; queue as pending if not already known
+                    if pubkey not in contacts:
+                        pending_contacts[pubkey] = c
+                        logger.info(f"Pending contact: {c.get('adv_name')!r} {pubkey[:12]}…")
+                        await broadcast({
+                            "type":    "pending_contact",
+                            "contact": serialize_pending(c),
+                        })
+                else:
+                    # Autoadd on (or unknown) — device saved it; mirror locally
+                    await on_contact(event)
 
             async def on_autoadd_config(event) -> None:
                 global autoadd_config
@@ -562,11 +566,11 @@ async def handle_purge_contacts() -> None:
     for pubkey in keys:
         try:
             await mc_instance.commands.remove_contact(pubkey)
-            contacts.pop(pubkey, None)
         except Exception as exc:
             logger.error(f"purge remove {pubkey[:12]}: {exc}")
+    contacts.clear()
     logger.info(f"Purged {len(keys)} contacts")
-    await broadcast(build_contacts_snapshot())
+    await broadcast({"type": "contacts_cleared"})
 
 
 async def handle_send_dm(packet: dict) -> None:
