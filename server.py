@@ -116,6 +116,30 @@ def find_contact(hop_hash: str) -> dict:
     return {}
 
 
+NODE_TYPE_NAMES = {0: "Client", 1: "Repeater", 2: "Room Server", 3: "Gateway"}
+
+
+def serialize_contact(pubkey: str, c: dict) -> dict:
+    return {
+        "type":         "contact_update",
+        "key":          pubkey[:12],
+        "name":         c.get("name") or pubkey[:12],
+        "node_type":    c.get("node_type"),
+        "node_type_name": NODE_TYPE_NAMES.get(c.get("node_type"), "Unknown"),
+        "out_path_len": c.get("out_path_len"),
+        "last_advert":  c.get("last_advert"),
+        "lat":          c.get("lat"),
+        "lon":          c.get("lon"),
+    }
+
+
+def build_contacts_snapshot() -> dict:
+    return {
+        "type":     "contacts_snapshot",
+        "contacts": [serialize_contact(k, v) for k, v in contacts.items()],
+    }
+
+
 def serialize_neighbor(n: dict) -> dict:
     snr_hist  = list(n["snr_history"])
     rssi_hist = list(n["rssi_history"])
@@ -205,11 +229,18 @@ async def meshcore_listener() -> None:
                     name   = c.get("adv_name") or c.get("name")
                     if pubkey and name:
                         contacts[pubkey] = {
-                            "name": name,
-                            "lat":  c.get("adv_lat"),
-                            "lon":  c.get("adv_lon"),
+                            "name":         name,
+                            "lat":          c.get("adv_lat"),
+                            "lon":          c.get("adv_lon"),
+                            "node_type":    c.get("type"),
+                            "out_path_len": c.get("out_path_len"),
+                            "last_advert":  c.get("last_advert"),
                         }
                         logger.info(f"Contact: {name!r} key={pubkey[:12]}…")
+                        await broadcast(serialize_contact(pubkey, contacts[pubkey]))
+                # After a full contacts list, also send snapshot
+                if isinstance(p, dict):
+                    await broadcast(build_contacts_snapshot())
 
             async def on_rx_log(event) -> None:
                 """Track last-hop neighbors and detect echoes of our sent messages."""
@@ -490,6 +521,10 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             await websocket.send_text(
                 json.dumps({"type": "dm_history", "messages": all_dms})
             )
+
+        # Contacts snapshot
+        if contacts:
+            await websocket.send_text(json.dumps(build_contacts_snapshot()))
 
         # Neighbor snapshot
         if neighbors:
