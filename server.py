@@ -21,10 +21,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 HISTORY_FILE = Path("chat_history.json")
+DM_HISTORY_DIR = Path("dm_history")
 HISTORY_MAX  = 1000
 
 connected_clients: Set[WebSocket] = set()
 message_buffer: deque = deque(maxlen=HISTORY_MAX)
+dm_buffers: dict = {}           # pubkey_prefix -> deque(maxlen=1000) of DM messages
 msg_id_counter = count(1)
 channel_names: dict = {}    # channel_idx -> name
 contacts: dict = {}         # full pubkey (hex) -> {name, lat, lon}
@@ -38,6 +40,32 @@ RELAY_WINDOW_SECS = 20      # how long to listen for echoes after sending
 # Set at startup from CLI args
 serial_port: str = ""
 serial_baud: int = 115200
+
+
+def dm_file(key: str) -> Path:
+    DM_HISTORY_DIR.mkdir(exist_ok=True)
+    return DM_HISTORY_DIR / f"{key}.json"
+
+
+def load_dm_history(key: str) -> deque:
+    buf: deque = deque(maxlen=HISTORY_MAX)
+    f = dm_file(key)
+    if f.exists():
+        try:
+            msgs = json.loads(f.read_text())
+            if isinstance(msgs, list):
+                for m in msgs[-HISTORY_MAX:]:
+                    buf.append(m)
+        except Exception as exc:
+            logger.warning(f"Could not load DM history for {key}: {exc}")
+    return buf
+
+
+def save_dm_history(key: str) -> None:
+    try:
+        dm_file(key).write_text(json.dumps(list(dm_buffers[key])))
+    except Exception as exc:
+        logger.warning(f"Could not save DM history for {key}: {exc}")
 
 
 def load_history() -> None:
@@ -254,9 +282,40 @@ async def meshcore_listener() -> None:
                 logger.info(f"Last-hop {hop_hash!r} ({contact.get('name', '?')}) snr={snr} rssi={rssi}")
                 await broadcast(serialize_neighbor(n))
 
+            async def on_contact_msg(event) -> None:
+                """Handle incoming direct (contact) messages."""
+                payload    = event.payload
+                key        = payload.get("pubkey_prefix", "unknown")
+                text       = payload.get("text", "")
+                ts = payload.get(
+                    "sender_timestamp",
+                    int(datetime.now(timezone.utc).timestamp()),
+                )
+                contact = find_contact(key)
+                sender  = contact.get("name") or key
+
+                if key not in dm_buffers:
+                    dm_buffers[key] = load_dm_history(key)
+
+                dm_msg = {
+                    "id":           next(msg_id_counter),
+                    "type":         "dm",
+                    "contact_key":  key,
+                    "contact_name": sender,
+                    "text":         text,
+                    "sender":       sender,
+                    "timestamp":    ts,
+                    "own":          False,
+                }
+                dm_buffers[key].append(dm_msg)
+                save_dm_history(key)
+                logger.info(f"DM from {sender!r} ({key}): {text!r}")
+                await broadcast(dm_msg)
+
             mc.subscribe(None, on_any_event)
             mc.subscribe(EventType.CHANNEL_INFO,     on_channel_info)
             mc.subscribe(EventType.CHANNEL_MSG_RECV, on_channel_msg)
+            mc.subscribe(EventType.CONTACT_MSG_RECV, on_contact_msg)
             mc.subscribe(EventType.RX_LOG_DATA,      on_rx_log)
             mc.subscribe(EventType.CONTACTS,         on_contact)
             mc.subscribe(EventType.NEW_CONTACT,      on_contact)
@@ -284,6 +343,37 @@ async def meshcore_listener() -> None:
             logger.error(f"MeshCore error: {exc} — retrying in 5 s")
             mc_instance = None
             await asyncio.sleep(5)
+
+
+async def handle_send_dm(packet: dict) -> None:
+    text        = packet.get("text", "").strip()
+    contact_key = packet.get("contact_key", "")
+    if not text or not contact_key or mc_instance is None:
+        return
+    try:
+        await mc_instance.commands.send_msg(contact_key, text)
+        contact = find_contact(contact_key)
+        contact_name = contact.get("name") or contact_key
+
+        if contact_key not in dm_buffers:
+            dm_buffers[contact_key] = load_dm_history(contact_key)
+
+        dm_msg = {
+            "id":           next(msg_id_counter),
+            "type":         "dm",
+            "contact_key":  contact_key,
+            "contact_name": contact_name,
+            "text":         text,
+            "sender":       "You",
+            "timestamp":    int(datetime.now(timezone.utc).timestamp()),
+            "own":          True,
+        }
+        dm_buffers[contact_key].append(dm_msg)
+        save_dm_history(contact_key)
+        logger.info(f"DM sent to {contact_name!r} ({contact_key}): {text!r}")
+        await broadcast(dm_msg)
+    except Exception as exc:
+        logger.error(f"DM send failed: {exc}")
 
 
 async def handle_send(packet: dict) -> None:
@@ -342,6 +432,12 @@ async def _relay_timeout(channel_idx: int, msg_id: int) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     load_history()
+    # Pre-load any saved per-contact DM history
+    if DM_HISTORY_DIR.exists():
+        for f in DM_HISTORY_DIR.glob("*.json"):
+            key = f.stem
+            dm_buffers[key] = load_dm_history(key)
+            logger.info(f"Loaded {len(dm_buffers[key])} DMs for contact {key}")
     task = asyncio.create_task(meshcore_listener())
     yield
     task.cancel()
@@ -385,6 +481,16 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 json.dumps({"type": "history", "messages": list(message_buffer)})
             )
 
+        # DM history — send each contact's thread
+        if dm_buffers:
+            all_dms = []
+            for buf in dm_buffers.values():
+                all_dms.extend(buf)
+            all_dms.sort(key=lambda m: m["timestamp"])
+            await websocket.send_text(
+                json.dumps({"type": "dm_history", "messages": all_dms})
+            )
+
         # Neighbor snapshot
         if neighbors:
             await websocket.send_text(json.dumps({
@@ -400,6 +506,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 continue
             if packet.get("type") == "send":
                 await handle_send(packet)
+            elif packet.get("type") == "send_dm":
+                await handle_send_dm(packet)
     except WebSocketDisconnect:
         pass
     finally:
