@@ -739,7 +739,9 @@
       <select id="contacts-sort">
         <option value="name">Alphabetical</option>
         <option value="last_advert">Last seen</option>
+        <option value="last_chat">Last chat</option>
         <option value="hops">Hop distance</option>
+        <option value="chat_count">Chat messages</option>
       </select>
     </label>
     <label>Type:
@@ -767,6 +769,13 @@
         <option value="3600">Last hour</option>
         <option value="86400">Last 24h</option>
         <option value="604800">Last week</option>
+      </select>
+    </label>
+    <label>Chat:
+      <select id="filter-chat">
+        <option value="">All</option>
+        <option value="yes">Seen chatting</option>
+        <option value="no">Never seen chat</option>
       </select>
     </label>
   </div>
@@ -1368,6 +1377,7 @@
   const filterType     = document.getElementById("filter-type");
   const filterHops     = document.getElementById("filter-hops");
   const filterSeen     = document.getElementById("filter-seen");
+  const filterChat     = document.getElementById("filter-chat");
 
   function processContactUpdate(c) {
     contactsMap.set(c.key, c);
@@ -1376,30 +1386,36 @@
   }
 
   function renderContacts() {
-    const sortBy    = sortSelect.value;
-    const typeVal   = filterType.value;
-    const maxHops   = filterHops.value !== "" ? parseInt(filterHops.value) : null;
-    const maxAge    = filterSeen.value !== "" ? parseInt(filterSeen.value) : null;
-    const nowSec    = Math.floor(Date.now() / 1000);
+    const sortBy   = sortSelect.value;
+    const typeVal  = filterType.value;
+    const maxHops  = filterHops.value !== "" ? parseInt(filterHops.value) : null;
+    const maxAge   = filterSeen.value !== "" ? parseInt(filterSeen.value) : null;
+    const chatFilt = filterChat.value;
+    const nowSec   = Math.floor(Date.now() / 1000);
 
     let items = [...contactsMap.values()];
 
-    // Filter
-    if (typeVal !== "")  items = items.filter(c => String(c.node_type) === typeVal);
+    // Filters
+    if (typeVal !== "") items = items.filter(c => String(c.node_type) === typeVal);
     if (maxHops !== null) items = items.filter(c => {
       const h = c.out_path_len;
-      if (h == null || h === -1) return false;
-      return h <= maxHops;
+      return h != null && h !== -1 && h <= maxHops;
     });
     if (maxAge !== null) items = items.filter(c =>
       c.last_advert != null && (nowSec - c.last_advert) <= maxAge
     );
+    if (chatFilt === "yes") items = items.filter(c => (c.chat_count || 0) > 0);
+    if (chatFilt === "no")  items = items.filter(c => (c.chat_count || 0) === 0);
 
     // Sort
     if (sortBy === "name") {
       items.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
     } else if (sortBy === "last_advert") {
       items.sort((a, b) => (b.last_advert || 0) - (a.last_advert || 0));
+    } else if (sortBy === "last_chat") {
+      items.sort((a, b) => (b.last_chat || 0) - (a.last_chat || 0));
+    } else if (sortBy === "chat_count") {
+      items.sort((a, b) => (b.chat_count || 0) - (a.chat_count || 0));
     } else if (sortBy === "hops") {
       items.sort((a, b) => {
         const ha = a.out_path_len == null || a.out_path_len === -1 ? 999 : a.out_path_len;
@@ -1435,7 +1451,6 @@
       const meta = document.createElement("div");
       meta.className = "contact-meta";
 
-      // Node type chip
       if (c.node_type_name) {
         const typeChip = document.createElement("span");
         typeChip.className = "contact-chip" + (
@@ -1447,26 +1462,36 @@
         meta.appendChild(typeChip);
       }
 
-      // Hop distance
       const hopsChip = document.createElement("span");
       hopsChip.className = "contact-chip";
-      if (c.out_path_len === -1) hopsChip.textContent = "flood";
+      if (c.out_path_len === -1)       hopsChip.textContent = "flood";
       else if (c.out_path_len != null) hopsChip.textContent = `${c.out_path_len} hop${c.out_path_len !== 1 ? "s" : ""}`;
-      else hopsChip.textContent = "hops unknown";
+      else                             hopsChip.textContent = "hops unknown";
       meta.appendChild(hopsChip);
 
-      // Last seen
       if (c.last_advert) {
         const seenChip = document.createElement("span");
         seenChip.className = "contact-chip";
-        seenChip.textContent = "seen " + fmtAgo(c.last_advert);
+        seenChip.textContent = "advert " + fmtAgo(c.last_advert);
         meta.appendChild(seenChip);
+      }
+
+      if (c.chat_count > 0) {
+        const chatChip = document.createElement("span");
+        chatChip.className = "contact-chip";
+        chatChip.textContent = `${c.chat_count} msg${c.chat_count !== 1 ? "s" : ""}`;
+        meta.appendChild(chatChip);
+        if (c.last_chat) {
+          const lastChatChip = document.createElement("span");
+          lastChatChip.className = "contact-chip";
+          lastChatChip.textContent = "chat " + fmtAgo(c.last_chat);
+          meta.appendChild(lastChatChip);
+        }
       }
 
       body.appendChild(meta);
       card.appendChild(body);
 
-      // Map link
       if (c.lat != null && c.lon != null && (c.lat !== 0 || c.lon !== 0)) {
         const mapLink = document.createElement("a");
         mapLink.className = "contact-map";
@@ -1481,7 +1506,7 @@
     }
   }
 
-  [sortSelect, filterType, filterHops, filterSeen].forEach(el =>
+  [sortSelect, filterType, filterHops, filterSeen, filterChat].forEach(el =>
     el.addEventListener("change", renderContacts)
   );
 
