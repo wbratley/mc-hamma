@@ -1213,6 +1213,7 @@
       btn.classList.add("active");
       if (page === "chats") renderChatsList();
       if (page === "contacts") renderContacts();
+      if (page === "nodes") renderNodes();
     });
   });
 
@@ -1295,7 +1296,7 @@
       nodesEl.innerHTML = '<p style="color:var(--text-muted);font-size:14px;text-align:center;margin-top:40px">Waiting for node advertisements…</p>';
       return;
     }
-    const sorted = [...nodeMap.values()].sort((a, b) => a.hops - b.hops);
+    const sorted = [...nodeMap.values()].sort((a, b) => b.last_seen - a.last_seen);
     nodesEl.innerHTML = "";
     for (const n of sorted) {
       const card = document.createElement("div");
