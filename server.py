@@ -308,6 +308,10 @@ async def meshcore_listener() -> None:
                     "channel_name": channel_names.get(channel_idx),
                     "hops": len(path_nodes),
                     "path": path_nodes,
+                    "snr":  rx.get("snr"),
+                    "rssi": rx.get("rssi"),
+                    "sender_lat": None,
+                    "sender_lon": None,
                 }
                 message_buffer.append(msg)
                 save_history()
@@ -320,10 +324,14 @@ async def meshcore_listener() -> None:
                 contact_stats[key]["last_chat"] = ts
                 save_contact_stats()
 
-                # Broadcast updated contact card if we know this contact
+                # Broadcast updated contact card if we know this contact;
+                # also attach sender location to the message for the UI
                 pubkey = find_pubkey_by_name(sender)
                 if pubkey and pubkey in contacts:
-                    await broadcast(serialize_contact(pubkey, contacts[pubkey]))
+                    c = contacts[pubkey]
+                    msg["sender_lat"] = c.get("lat")
+                    msg["sender_lon"] = c.get("lon")
+                    await broadcast(serialize_contact(pubkey, c))
 
                 logger.info(f"Channel {channel_idx} message from {sender!r}: {text!r}")
                 await broadcast(msg)
@@ -368,6 +376,8 @@ async def meshcore_listener() -> None:
                     _rx_scratch["last_grp_txt"] = {
                         "path": path,
                         "path_hash_size": path_hash_size,
+                        "snr":  snr,
+                        "rssi": rssi,
                     }
 
                 # Last entry in path = the node that directly handed us the packet
