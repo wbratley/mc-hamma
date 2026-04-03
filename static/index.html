@@ -539,6 +539,30 @@
     }
     .hop-badge:hover { color: var(--accent); }
 
+    .direct-badge {
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--status-ok);
+      background: rgba(76, 175, 136, 0.12);
+      border: 1px solid rgba(76, 175, 136, 0.3);
+      border-radius: 4px;
+      padding: 1px 5px;
+      margin-left: 5px;
+      vertical-align: middle;
+      white-space: nowrap;
+    }
+
+    .sender-map-link {
+      display: inline-flex;
+      align-items: center;
+      color: var(--accent);
+      margin-left: 5px;
+      vertical-align: middle;
+      text-decoration: none;
+      opacity: 0.75;
+    }
+    .sender-map-link:hover { opacity: 1; }
+
     .hop-popup {
       position: fixed;
       background: var(--surface);
@@ -1207,16 +1231,37 @@
     senderName.style.color = senderColour(msg.sender);
     senderDiv.appendChild(senderName);
 
-    if (!msg.own && msg.hops > 0 && msg.path && msg.path.length > 0) {
-      const badge = document.createElement("span");
-      badge.className = "hop-badge";
-      badge.textContent = `${msg.hops} hop${msg.hops !== 1 ? "s" : ""}`;
-      badge.title = "Click to see relay path";
-      badge.addEventListener("click", (e) => {
-        e.stopPropagation();
-        showHopPopup(e, msg.path);
-      });
-      senderDiv.appendChild(badge);
+    if (!msg.own) {
+      if (msg.hops > 0 && msg.path && msg.path.length > 0) {
+        const badge = document.createElement("span");
+        badge.className = "hop-badge";
+        badge.textContent = `${msg.hops} hop${msg.hops !== 1 ? "s" : ""}`;
+        badge.title = "Click to see relay path";
+        badge.addEventListener("click", (e) => {
+          e.stopPropagation();
+          showHopPopup(e, msg.path);
+        });
+        senderDiv.appendChild(badge);
+      } else {
+        // Direct (no relay hops) — show indicator + SNR
+        const direct = document.createElement("span");
+        direct.className = "direct-badge";
+        direct.textContent = "📡 direct" + (msg.snr != null ? ` · ${msg.snr} dB` : "");
+        senderDiv.appendChild(direct);
+      }
+
+      // Map link if sender location is known
+      if (msg.sender_lat != null && msg.sender_lon != null &&
+          (msg.sender_lat !== 0 || msg.sender_lon !== 0)) {
+        const mapLink = document.createElement("a");
+        mapLink.className = "sender-map-link";
+        mapLink.href = `https://www.google.com/maps?q=${msg.sender_lat},${msg.sender_lon}`;
+        mapLink.target = "_blank";
+        mapLink.rel = "noopener";
+        mapLink.title = `${msg.sender_lat.toFixed(4)}, ${msg.sender_lon.toFixed(4)}`;
+        mapLink.innerHTML = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>`;
+        senderDiv.appendChild(mapLink);
+      }
     }
 
     row.appendChild(senderDiv);
