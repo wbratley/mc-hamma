@@ -1774,10 +1774,36 @@
     el.addEventListener("change", renderContacts)
   );
 
-  // Re-render pending when smart-add filters change
+  function sendSmartAddConfig() {
+    if (!ws || !wsConnected) return;
+    ws.send(JSON.stringify({
+      type:     "set_smart_add",
+      nodes:    document.getElementById("auto-nodes").checked,
+      paths:    document.getElementById("auto-paths").checked,
+      chatters: document.getElementById("auto-chatters").checked,
+    }));
+  }
+
+  // When a smart-add checkbox is turned ON, scan existing pending and prompt
   ["auto-nodes", "auto-paths", "auto-chatters"].forEach(id => {
-    document.getElementById(id).addEventListener("change", () => {
-      if (document.getElementById("page-pending").classList.contains("active")) renderPending();
+    document.getElementById(id).addEventListener("change", (e) => {
+      sendSmartAddConfig();
+      if (e.target.checked && pendingMap.size > 0) {
+        const nodeKeys   = new Set(nodeMap.keys());
+        const pathHashes = getPathHashes();
+        const chatNames  = getChatSenderNames();
+        const matched = [...pendingMap.values()].filter(
+          c => matchReasons(c, nodeKeys, pathHashes, chatNames).length > 0
+        );
+        if (matched.length > 0 && ws && wsConnected) {
+          if (confirm(`${matched.length} pending contact${matched.length !== 1 ? "s" : ""} match this filter. Add them now?`)) {
+            for (const c of matched) {
+              ws.send(JSON.stringify({ type: "add_contact", pubkey: c.pubkey }));
+            }
+          }
+        }
+      }
+      renderPending();
     });
   });
 
@@ -1786,14 +1812,18 @@
     const nodeKeys   = new Set(nodeMap.keys());
     const pathHashes = getPathHashes();
     const chatNames  = getChatSenderNames();
-    let count = 0;
-    for (const c of pendingMap.values()) {
-      if (matchReasons(c, nodeKeys, pathHashes, chatNames).length) {
+    const matched = [...pendingMap.values()].filter(
+      c => matchReasons(c, nodeKeys, pathHashes, chatNames).length > 0
+    );
+    if (matched.length === 0) {
+      alert("No pending contacts match the selected filters.");
+      return;
+    }
+    if (confirm(`Add ${matched.length} matched contact${matched.length !== 1 ? "s" : ""}?`)) {
+      for (const c of matched) {
         ws.send(JSON.stringify({ type: "add_contact", pubkey: c.pubkey }));
-        count++;
       }
     }
-    if (count === 0) alert("No pending contacts match the selected filters.");
   });
 
   // ── DM / Chats ───────────────────────────────────────────────────────────
@@ -2024,6 +2054,11 @@
         if (document.getElementById("page-contacts").classList.contains("active")) renderContacts();
       } else if (packet.type === "autoadd_config") {
         autoaddToggle.checked = packet.value > 0;
+      } else if (packet.type === "smart_add_config") {
+        document.getElementById("auto-nodes").checked    = !!packet.config.nodes;
+        document.getElementById("auto-paths").checked    = !!packet.config.paths;
+        document.getElementById("auto-chatters").checked = !!packet.config.chatters;
+        if (document.getElementById("page-pending").classList.contains("active")) renderPending();
       } else if (packet.type === "pending_contact") {
         pendingMap.set(packet.contact.pubkey, packet.contact);
         updatePendingBadge();

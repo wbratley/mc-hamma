@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 HISTORY_FILE = Path("chat_history.json")
 DM_HISTORY_DIR = Path("dm_history")
 CONTACT_STATS_FILE = Path("contact_stats.json")
+SMART_ADD_FILE = Path("smart_add_config.json")
 HISTORY_MAX  = 1000
 
 connected_clients: Set[WebSocket] = set()
@@ -34,6 +35,7 @@ contacts: dict = {}         # full pubkey (hex) -> {name, lat, lon, ...}
 contact_stats: dict = {}    # sender name (lower) -> {msg_count, last_chat}
 pending_contacts: dict = {} # pubkey -> full contact dict (seen but not yet added)
 autoadd_config: int = -1    # -1 = unknown; 0 = off; 1+ = on
+smart_add_config: dict = {"nodes": False, "paths": False, "chatters": False}
 neighbors: dict = {}        # last-hop hash (hex) -> neighbor entry
 relay_windows: dict = {}    # channel_idx -> relay tracking entry
 _rx_scratch: dict = {}      # RX_LOG_DATA → CHANNEL_MSG_RECV correlation
@@ -146,6 +148,26 @@ def save_contact_stats() -> None:
         CONTACT_STATS_FILE.write_text(json.dumps(contact_stats))
     except Exception as exc:
         logger.warning(f"Could not save contact stats: {exc}")
+
+
+def load_smart_add_config() -> None:
+    if not SMART_ADD_FILE.exists():
+        return
+    try:
+        data = json.loads(SMART_ADD_FILE.read_text())
+        for k in ("nodes", "paths", "chatters"):
+            if k in data:
+                smart_add_config[k] = bool(data[k])
+        logger.info(f"Loaded smart_add_config: {smart_add_config}")
+    except Exception as exc:
+        logger.warning(f"Could not load smart_add_config: {exc}")
+
+
+def save_smart_add_config() -> None:
+    try:
+        SMART_ADD_FILE.write_text(json.dumps(smart_add_config))
+    except Exception as exc:
+        logger.warning(f"Could not save smart_add_config: {exc}")
 
 
 NODE_TYPE_NAMES = {0: "Client", 1: "Repeater", 2: "Room Server", 3: "Gateway"}
@@ -442,22 +464,30 @@ async def meshcore_listener() -> None:
             mc.subscribe(EventType.RX_LOG_DATA,      on_rx_log)
             async def on_new_contact_pending(event) -> None:
                 """NEW_CONTACT push = node heard (PUSH_CODE_NEW_ADVERT).
-                If autoadd is off, the device won't save it — treat as pending.
-                If autoadd is on, the device saved it — add to our local contacts."""
+                If autoadd is off, the device won't save it — check smart_add filters
+                first; if matched, add immediately; otherwise queue as pending.
+                If autoadd is on, the device saved it — mirror locally."""
                 global autoadd_config
                 c = event.payload
                 pubkey = c.get("public_key")
                 if not pubkey:
                     return
                 if autoadd_config == 0:
-                    # Device won't auto-save; queue as pending if not already known
                     if pubkey not in contacts:
-                        pending_contacts[pubkey] = c
-                        logger.info(f"Pending contact: {c.get('adv_name')!r} {pubkey[:12]}…")
-                        await broadcast({
-                            "type":    "pending_contact",
-                            "contact": serialize_pending(c),
-                        })
+                        reasons = check_smart_add(c)
+                        if reasons:
+                            logger.info(
+                                f"Smart-adding {c.get('adv_name')!r} {pubkey[:12]}… "
+                                f"({', '.join(reasons)})"
+                            )
+                            await do_add_contact(pubkey, c)
+                        else:
+                            pending_contacts[pubkey] = c
+                            logger.info(f"Pending contact: {c.get('adv_name')!r} {pubkey[:12]}…")
+                            await broadcast({
+                                "type":    "pending_contact",
+                                "contact": serialize_pending(c),
+                            })
                 else:
                     # Autoadd on (or unknown) — device saved it; mirror locally
                     await on_contact(event)
@@ -503,6 +533,15 @@ async def meshcore_listener() -> None:
             await asyncio.sleep(5)
 
 
+async def handle_set_smart_add(packet: dict) -> None:
+    for k in ("nodes", "paths", "chatters"):
+        if k in packet:
+            smart_add_config[k] = bool(packet[k])
+    save_smart_add_config()
+    logger.info(f"Smart-add config updated: {smart_add_config}")
+    await broadcast({"type": "smart_add_config", "config": dict(smart_add_config)})
+
+
 async def handle_set_autoadd(packet: dict) -> None:
     global autoadd_config
     value = int(packet.get("value", 0))
@@ -517,17 +556,43 @@ async def handle_set_autoadd(packet: dict) -> None:
         logger.error(f"set_autoadd failed: {exc}")
 
 
-async def handle_add_contact(packet: dict) -> None:
-    pubkey = packet.get("pubkey", "")
-    if not pubkey or mc_instance is None:
-        return
-    c = pending_contacts.get(pubkey)
-    if not c:
-        logger.warning(f"add_contact: {pubkey[:12]} not in pending_contacts")
+def check_smart_add(c: dict) -> list:
+    """Return list of match reasons if smart_add_config says this contact should be auto-added."""
+    reasons = []
+    pubkey    = (c.get("public_key") or "").lower()
+    node_type = c.get("type")
+    name      = (c.get("adv_name") or "").lower()
+
+    if smart_add_config.get("nodes") and node_type == 1:
+        for hop_hash in neighbors:
+            if pubkey.startswith(hop_hash.lower()):
+                reasons.append("repeater in nodes")
+                break
+
+    if smart_add_config.get("paths") and node_type == 1:
+        found = False
+        for msg in message_buffer:
+            for node in msg.get("path", []):
+                h = (node.get("hash") or "").lower()
+                if h and pubkey.startswith(h):
+                    reasons.append("repeater in paths")
+                    found = True
+                    break
+            if found:
+                break
+
+    if smart_add_config.get("chatters") and name and name in contact_stats:
+        reasons.append("seen chatting")
+
+    return reasons
+
+
+async def do_add_contact(pubkey: str, c: dict) -> None:
+    """Add a contact to device memory and move from pending to contacts dict."""
+    if mc_instance is None:
         return
     try:
         await mc_instance.commands.add_contact(c)
-        # Move from pending to contacts
         name = c.get("adv_name") or pubkey[:12]
         contacts[pubkey] = {
             "name":         name,
@@ -537,12 +602,23 @@ async def handle_add_contact(packet: dict) -> None:
             "out_path_len": c.get("out_path_len"),
             "last_advert":  c.get("last_advert"),
         }
-        del pending_contacts[pubkey]
+        pending_contacts.pop(pubkey, None)
         logger.info(f"Added contact {name!r} {pubkey[:12]}…")
         await broadcast(serialize_contact(pubkey, contacts[pubkey]))
         await broadcast({"type": "pending_contact_removed", "pubkey": pubkey})
     except Exception as exc:
         logger.error(f"add_contact failed: {exc}")
+
+
+async def handle_add_contact(packet: dict) -> None:
+    pubkey = packet.get("pubkey", "")
+    if not pubkey or mc_instance is None:
+        return
+    c = pending_contacts.get(pubkey)
+    if not c:
+        logger.warning(f"add_contact: {pubkey[:12]} not in pending_contacts")
+        return
+    await do_add_contact(pubkey, c)
 
 
 async def handle_remove_contact(packet: dict) -> None:
@@ -661,6 +737,7 @@ async def _relay_timeout(channel_idx: int, msg_id: int) -> None:
 async def lifespan(app: FastAPI):
     load_history()
     load_contact_stats()
+    load_smart_add_config()
     # Pre-load any saved per-contact DM history
     if DM_HISTORY_DIR.exists():
         for f in DM_HISTORY_DIR.glob("*.json"):
@@ -727,6 +804,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         # Autoadd config
         await websocket.send_text(json.dumps({"type": "autoadd_config", "value": autoadd_config}))
 
+        # Smart-add config
+        await websocket.send_text(json.dumps({"type": "smart_add_config", "config": dict(smart_add_config)}))
+
         # Pending contacts
         if pending_contacts:
             await websocket.send_text(json.dumps({
@@ -753,6 +833,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 await handle_send_dm(packet)
             elif packet.get("type") == "set_autoadd":
                 await handle_set_autoadd(packet)
+            elif packet.get("type") == "set_smart_add":
+                await handle_set_smart_add(packet)
             elif packet.get("type") == "add_contact":
                 await handle_add_contact(packet)
             elif packet.get("type") == "remove_contact":
