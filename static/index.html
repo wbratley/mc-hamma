@@ -405,6 +405,74 @@
       text-align: center; margin-top: 40px;
     }
 
+    /* ── Adverts page ── */
+    #page-adverts {
+      flex-direction: column; overflow: hidden;
+    }
+    #adverts-toolbar {
+      display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+      padding: 10px 14px; background: var(--surface);
+      border-bottom: 1px solid var(--border); flex-shrink: 0;
+    }
+    #adverts-toolbar select {
+      background: var(--surface2); border: 1px solid var(--border);
+      color: var(--text); border-radius: 6px; padding: 5px 8px;
+      font-size: 12px; outline: none;
+    }
+    #adverts-toolbar select:focus { border-color: var(--accent); }
+    .advert-send-btn {
+      font-size: 13px; padding: 6px 14px; border-radius: 7px;
+      border: 1px solid var(--accent); background: var(--accent-dim);
+      color: var(--accent); cursor: pointer; font-weight: 600;
+    }
+    .advert-send-btn:hover { background: var(--accent); color: #fff; }
+    .advert-send-btn.flood { border-color: var(--status-warn); background: rgba(224,160,48,0.1); color: var(--status-warn); }
+    .advert-send-btn.flood:hover { background: var(--status-warn); color: #000; }
+    #adverts-scroll {
+      flex: 1; min-height: 0; overflow-y: auto;
+      padding: 10px 14px; display: flex; flex-direction: column; gap: 10px;
+    }
+    .advert-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; padding: 12px 14px;
+    }
+    .advert-card.active { border-color: var(--accent); }
+    .advert-card-header {
+      display: flex; align-items: center; gap: 8px;
+      font-size: 13px; font-weight: 600; margin-bottom: 6px;
+    }
+    .advert-type-pill {
+      font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 4px;
+      background: var(--accent-dim); color: var(--accent); border: 1px solid var(--accent);
+    }
+    .advert-type-pill.flood {
+      background: rgba(224,160,48,0.15); color: var(--status-warn); border-color: var(--status-warn);
+    }
+    .advert-live-tag {
+      font-size: 10px; color: var(--status-ok); font-weight: 700;
+      animation: pulse 1s ease-in-out infinite;
+    }
+    .advert-stats {
+      display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 6px;
+    }
+    .advert-stat {
+      background: var(--surface2); border-radius: 6px; padding: 4px 9px;
+      font-size: 12px;
+    }
+    .advert-stat-label { color: var(--text-muted); font-size: 10px; }
+    .advert-nodes { margin-top: 6px; }
+    .advert-node-row {
+      display: flex; align-items: center; gap: 8px;
+      padding: 4px 0; border-bottom: 1px solid var(--border);
+      font-size: 12px;
+    }
+    .advert-node-row:last-child { border-bottom: none; }
+    .advert-node-name { flex: 1; font-weight: 500; }
+    .advert-node-chip {
+      font-size: 11px; color: var(--text-muted);
+      background: var(--surface2); border-radius: 4px; padding: 1px 5px;
+    }
+
     /* ── Nodes page ── */
     #page-nodes {
       overflow-y: auto; padding: 16px;
@@ -799,6 +867,10 @@
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
         Pending
       </button>
+      <button class="nav-item" data-page="adverts">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12H3"/><path d="M21 12h-2"/><path d="M12 3v2"/><path d="M12 19v2"/><path d="M5.64 5.64l1.42 1.42"/><path d="M16.95 16.95l1.41 1.41"/><path d="M16.95 7.05l1.41-1.41"/><path d="M5.64 18.36l1.42-1.42"/><circle cx="12" cy="12" r="4"/></svg>
+        Adverts
+      </button>
       <button class="nav-item" data-page="nodes">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="3"/><circle cx="5" cy="19" r="3"/><circle cx="19" cy="19" r="3"/><line x1="12" y1="8" x2="5.5" y2="16"/><line x1="12" y1="8" x2="18.5" y2="16"/></svg>
         Nodes
@@ -920,6 +992,34 @@
     <button id="add-matched-btn" class="mgmt-btn" style="margin-left:auto">Add all matched</button>
   </div>
   <div id="pending-scroll"></div>
+</div>
+
+<div id="page-adverts" class="page">
+  <div id="adverts-toolbar">
+    <button class="advert-send-btn" id="btn-advert">📡 Send Advert</button>
+    <button class="advert-send-btn flood" id="btn-flood-advert">🌊 Send Flood</button>
+    <span class="mgmt-spacer"></span>
+    <label class="toggle-wrap">
+      <input type="checkbox" id="advert-sched-enable">
+      <span class="mgmt-label">Auto every</span>
+    </label>
+    <select id="advert-sched-interval">
+      <option value="30">30 s</option>
+      <option value="60">1 min</option>
+      <option value="120">2 min</option>
+      <option value="300" selected>5 min</option>
+      <option value="600">10 min</option>
+      <option value="900">15 min</option>
+      <option value="1800">30 min</option>
+    </select>
+    <select id="advert-sched-type">
+      <option value="regular">Regular</option>
+      <option value="flood">Flood</option>
+    </select>
+  </div>
+  <div id="adverts-scroll">
+    <p style="color:var(--text-muted);font-size:14px;text-align:center;margin-top:40px">No adverts sent yet</p>
+  </div>
 </div>
 
 <div id="page-nodes" class="page">
@@ -1404,6 +1504,7 @@
       if (page === "chats") renderChatsList();
       if (page === "contacts") renderContacts();
       if (page === "pending") renderPending();
+      if (page === "adverts") renderAdverts();
       if (page === "nodes") renderNodes();
     });
   });
@@ -2073,6 +2174,220 @@
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendDm(); }
   });
 
+  // ── Adverts page ─────────────────────────────────────────────────────────
+  const advertsScrollEl = document.getElementById("adverts-scroll");
+  const advertCards     = new Map(); // advert_id -> DOM card element
+  let   advertHistoryData = [];      // completed advert summaries
+
+  function fmtAdvertHeader(a) {
+    const t = new Date(a.sent_at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+    return `${fmtDate(a.sent_at)} ${t}`;
+  }
+
+  function buildAdvertCard(a, live = false) {
+    const card = document.createElement("div");
+    card.className = "advert-card" + (live ? " active" : "");
+
+    const hdr = document.createElement("div");
+    hdr.className = "advert-card-header";
+
+    const pill = document.createElement("span");
+    pill.className = "advert-type-pill" + (a.flood ? " flood" : "");
+    pill.textContent = a.flood ? "Flood" : "Regular";
+    hdr.appendChild(pill);
+
+    const ts = document.createElement("span");
+    ts.textContent = fmtAdvertHeader(a);
+    hdr.appendChild(ts);
+
+    if (live) {
+      const liveTag = document.createElement("span");
+      liveTag.className = "advert-live-tag";
+      liveTag.textContent = "● Listening…";
+      hdr.appendChild(liveTag);
+    }
+    card.appendChild(hdr);
+
+    // Stats row
+    const stats = document.createElement("div");
+    stats.className = "advert-stats";
+    stats.dataset.statsFor = a.id;
+    card.appendChild(stats);
+
+    // Sparkline placeholder
+    const sparkWrap = document.createElement("div");
+    sparkWrap.dataset.sparkFor = a.id;
+    card.appendChild(sparkWrap);
+
+    // Node list
+    const nodeList = document.createElement("div");
+    nodeList.className = "advert-nodes";
+    nodeList.dataset.nodesFor = a.id;
+    card.appendChild(nodeList);
+
+    updateAdvertCardContent(card, a);
+    return card;
+  }
+
+  function updateAdvertCardContent(card, a) {
+    const stats = card.querySelector("[data-stats-for]");
+    if (stats) {
+      stats.innerHTML = "";
+      const items = [
+        ["Responses", a.total_responses ?? 0],
+        ["Nodes",     a.node_count ?? (a.nodes ? a.nodes.length : 0)],
+        ["Avg SNR",   a.avg_snr != null ? `${a.avg_snr} dB` : "—"],
+      ];
+      for (const [label, val] of items) {
+        const s = document.createElement("div");
+        s.className = "advert-stat";
+        s.innerHTML = `<div class="advert-stat-label">${label}</div><div>${val}</div>`;
+        stats.appendChild(s);
+      }
+    }
+
+    const sparkWrap = card.querySelector("[data-spark-for]");
+    if (sparkWrap && a.time_series) {
+      sparkWrap.innerHTML = buildSparkline(a.time_series);
+    }
+
+    const nodeList = card.querySelector("[data-nodes-for]");
+    if (nodeList && a.nodes && a.nodes.length > 0) {
+      nodeList.innerHTML = "";
+      for (const n of a.nodes) {
+        const row = document.createElement("div");
+        row.className = "advert-node-row";
+        const nameEl = document.createElement("span");
+        nameEl.className = "advert-node-name";
+        nameEl.textContent = n.name || n.hash?.slice(0, 8) || "?";
+        row.appendChild(nameEl);
+        const chips = [
+          n.count != null      ? `${n.count}×`          : null,
+          n.avg_snr  != null   ? `${n.avg_snr} dB`      : null,
+          n.avg_rssi != null   ? `${n.avg_rssi} dBm`    : null,
+        ].filter(Boolean);
+        for (const c of chips) {
+          const chip = document.createElement("span");
+          chip.className = "advert-node-chip";
+          chip.textContent = c;
+          row.appendChild(chip);
+        }
+        nodeList.appendChild(row);
+      }
+    }
+  }
+
+  function renderAdverts() {
+    if (advertHistoryData.length === 0 && advertCards.size === 0) {
+      advertsScrollEl.innerHTML = '<p style="color:var(--text-muted);font-size:14px;text-align:center;margin-top:40px">No adverts sent yet</p>';
+      return;
+    }
+    advertsScrollEl.innerHTML = "";
+    // Active windows first (most recent at top), then history (newest first)
+    const activeIds = [...advertCards.keys()];
+    for (const id of activeIds) {
+      advertsScrollEl.appendChild(advertCards.get(id));
+    }
+    for (let i = advertHistoryData.length - 1; i >= 0; i--) {
+      advertsScrollEl.appendChild(buildAdvertCard(advertHistoryData[i], false));
+    }
+  }
+
+  // When advert is sent, add a live card at the top
+  function onAdvertSent(a) {
+    const card = buildAdvertCard(a, true);
+    advertCards.set(a.id, card);
+    if (advertsScrollEl.querySelector("p")) advertsScrollEl.innerHTML = "";
+    advertsScrollEl.insertBefore(card, advertsScrollEl.firstChild);
+  }
+
+  // Live update to a node within an active advert
+  function onAdvertUpdate(msg) {
+    const card = advertCards.get(msg.id);
+    if (!card) return;
+    // Merge node into a synthetic summary and refresh card content
+    const nodeList = card.querySelector("[data-nodes-for]");
+    if (!nodeList) return;
+    // Find or create row for this node
+    const existingRows = [...nodeList.querySelectorAll(".advert-node-row")];
+    let row = existingRows.find(r => r.dataset.hash === msg.node.hash);
+    if (!row) {
+      row = document.createElement("div");
+      row.className = "advert-node-row";
+      row.dataset.hash = msg.node.hash;
+      nodeList.appendChild(row);
+    }
+    row.innerHTML = "";
+    const nameEl = document.createElement("span");
+    nameEl.className = "advert-node-name";
+    nameEl.textContent = msg.node.name || msg.node.hash?.slice(0, 8) || "?";
+    row.appendChild(nameEl);
+    const chips = [
+      `${msg.node.count}×`,
+      msg.node.avg_snr  != null ? `${msg.node.avg_snr} dB`   : null,
+      msg.node.avg_rssi != null ? `${msg.node.avg_rssi} dBm` : null,
+    ].filter(Boolean);
+    for (const c of chips) {
+      const chip = document.createElement("span");
+      chip.className = "advert-node-chip";
+      chip.textContent = c;
+      row.appendChild(chip);
+    }
+    // Update response count in stats
+    const statsEl = card.querySelector("[data-stats-for]");
+    if (statsEl) {
+      const nodeCount = nodeList.querySelectorAll(".advert-node-row").length;
+      const statDivs  = statsEl.querySelectorAll(".advert-stat");
+      // Responses = sum of counts across all rows (approximation)
+      let total = 0;
+      for (const r of nodeList.querySelectorAll(".advert-node-row")) {
+        const c = r.querySelector(".advert-node-chip");
+        if (c) total += parseInt(c.textContent) || 0;
+      }
+      if (statDivs[0]) statDivs[0].querySelector("div:last-child").textContent = total;
+      if (statDivs[1]) statDivs[1].querySelector("div:last-child").textContent = nodeCount;
+    }
+  }
+
+  // Advert window closed — replace live card with final summary
+  function onAdvertComplete(a) {
+    advertHistoryData.push(a);
+    const liveCard = advertCards.get(a.id);
+    if (liveCard) {
+      liveCard.classList.remove("active");
+      const liveTag = liveCard.querySelector(".advert-live-tag");
+      if (liveTag) liveTag.remove();
+      updateAdvertCardContent(liveCard, a);
+      advertCards.delete(a.id);
+    } else {
+      renderAdverts();
+    }
+  }
+
+  // Advert schedule UI
+  const advertSchedEnable   = document.getElementById("advert-sched-enable");
+  const advertSchedInterval = document.getElementById("advert-sched-interval");
+  const advertSchedType     = document.getElementById("advert-sched-type");
+
+  function sendAdvertSchedule() {
+    ws && ws.send(JSON.stringify({
+      type:         "set_advert_schedule",
+      enabled:      advertSchedEnable.checked,
+      interval_secs: parseInt(advertSchedInterval.value),
+      flood:        advertSchedType.value === "flood",
+    }));
+  }
+
+  document.getElementById("btn-advert").addEventListener("click", () => {
+    ws && wsConnected && ws.send(JSON.stringify({ type: "send_advert", flood: false }));
+  });
+  document.getElementById("btn-flood-advert").addEventListener("click", () => {
+    ws && wsConnected && ws.send(JSON.stringify({ type: "send_advert", flood: true }));
+  });
+  advertSchedEnable.addEventListener("change",   sendAdvertSchedule);
+  advertSchedInterval.addEventListener("change", sendAdvertSchedule);
+  advertSchedType.addEventListener("change",     sendAdvertSchedule);
+
   // ── WebSocket ────────────────────────────────────────────────────────────
   const WS_URL = `ws://${location.host}/ws`;
   let ws = null;
@@ -2141,6 +2456,20 @@
         pendingMap.delete(packet.pubkey);
         updatePendingBadge();
         if (document.getElementById("page-pending").classList.contains("active")) renderPending();
+      } else if (packet.type === "advert_history") {
+        advertHistoryData = packet.adverts || [];
+        if (document.getElementById("page-adverts").classList.contains("active")) renderAdverts();
+      } else if (packet.type === "advert_schedule") {
+        advertSchedEnable.checked          = !!packet.schedule.enabled;
+        advertSchedInterval.value          = String(packet.schedule.interval_secs);
+        advertSchedType.value              = packet.schedule.flood ? "flood" : "regular";
+      } else if (packet.type === "advert_sent") {
+        onAdvertSent(packet);
+        if (document.getElementById("page-adverts").classList.contains("active")) {}
+      } else if (packet.type === "advert_update") {
+        onAdvertUpdate(packet);
+      } else if (packet.type === "advert_complete") {
+        onAdvertComplete(packet.advert);
       } else if (packet.type === "contact_removed") {
         // Remove by 12-char key prefix
         for (const [k] of contactsMap) { if (k === packet.pubkey) contactsMap.delete(k); }
