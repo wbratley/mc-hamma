@@ -594,6 +594,32 @@
     .hop-popup .pop-node-name { color: var(--text); }
     .hop-popup .pop-node-hash { color: var(--text-secondary); font-family: monospace; }
 
+    .sender-popup {
+      position: fixed;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 6px;
+      z-index: 999;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+      min-width: 130px;
+      pointer-events: auto;
+    }
+    .sender-popup button {
+      display: block;
+      width: 100%;
+      background: none;
+      border: none;
+      color: var(--text);
+      padding: 8px 12px;
+      text-align: left;
+      border-radius: 7px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    .sender-popup button:hover { background: var(--surface2); }
+    .sender-popup button.danger { color: var(--status-err); }
+
     .sender {
       font-size: 12px;
       font-weight: 600;
@@ -1097,6 +1123,7 @@
 
     let lastDate = null;
     for (const msg of ch.messages) {
+      if (!msg.own && filteredSenders.has((msg.sender || "").toLowerCase())) continue;
       const dl = fmtDate(msg.timestamp);
       if (dl !== lastDate) {
         lastDate = dl;
@@ -1175,6 +1202,54 @@
     if (_hopPopup) { _hopPopup.remove(); _hopPopup = null; }
   }
 
+  // ── Sender context popup (Reply / Mute / Unmute) ─────────────────────────
+  const filteredSenders = new Set();
+  let _senderPopup = null;
+
+  function dismissSenderPopup() {
+    if (_senderPopup) { _senderPopup.remove(); _senderPopup = null; }
+  }
+
+  function showSenderPopup(event, sender) {
+    event.stopPropagation();
+    dismissSenderPopup();
+    dismissHopPopup();
+
+    const pop = document.createElement("div");
+    pop.className = "sender-popup";
+
+    const replyBtn = document.createElement("button");
+    replyBtn.textContent = "Reply";
+    replyBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      setReplyTo(sender);
+      dismissSenderPopup();
+    });
+    pop.appendChild(replyBtn);
+
+    const isMuted = filteredSenders.has(sender.toLowerCase());
+    const muteBtn = document.createElement("button");
+    muteBtn.className = isMuted ? "" : "danger";
+    muteBtn.textContent = isMuted ? "Unmute" : "Mute";
+    muteBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      ws && ws.send(JSON.stringify({ type: "set_sender_filter", sender, muted: !isMuted }));
+      dismissSenderPopup();
+    });
+    pop.appendChild(muteBtn);
+
+    document.body.appendChild(pop);
+    const x = Math.min(event.clientX + 8, window.innerWidth  - pop.offsetWidth  - 12);
+    const y = Math.min(event.clientY + 8, window.innerHeight - pop.offsetHeight - 12);
+    pop.style.left = `${x}px`;
+    pop.style.top  = `${y}px`;
+    _senderPopup = pop;
+
+    setTimeout(() => {
+      document.addEventListener("click", dismissSenderPopup, { once: true });
+    }, 0);
+  }
+
   // Render text with @[Name] patterns replaced by styled mention pills
   function renderText(text) {
     const span = document.createElement("span");
@@ -1250,6 +1325,11 @@
     const senderName = document.createElement("span");
     senderName.textContent = msg.sender;
     senderName.style.color = senderColour(msg.sender);
+    if (!msg.own) {
+      senderName.style.cursor = "pointer";
+      senderName.title = "Click to reply or mute";
+      senderName.addEventListener("click", (e) => showSenderPopup(e, msg.sender));
+    }
     senderDiv.appendChild(senderName);
 
     if (!msg.own) {
@@ -1300,10 +1380,10 @@
     bubble.appendChild(timeSpan);
     row.appendChild(bubble);
 
-    // Tap to reply — skip own messages
+    // Tap bubble to reply — skip own messages
     if (!msg.own) {
-      row.style.cursor = "pointer";
-      row.addEventListener("click", () => setReplyTo(msg.sender));
+      bubble.style.cursor = "pointer";
+      bubble.addEventListener("click", () => setReplyTo(msg.sender));
     }
 
     if (msg.own) {
@@ -1329,24 +1409,28 @@
     const ch = getOrCreateChannel(msg.channel_idx, msg.channel_name);
     ch.messages.push(msg);
 
+    const isSenderFiltered = !msg.own && filteredSenders.has((msg.sender || "").toLowerCase());
+
     if (msg.channel_idx === currentIdx) {
-      // Append to live view
-      const dl = fmtDate(msg.timestamp);
-      const seps = messagesEl.querySelectorAll(".date-sep");
-      const lastSep = seps[seps.length - 1];
-      if (!lastSep || lastSep.textContent !== dl) {
-        const sep = document.createElement("div");
-        sep.className = "date-sep";
-        sep.textContent = dl;
-        messagesEl.appendChild(sep);
+      // Append to live view (skip filtered senders)
+      if (!isSenderFiltered) {
+        const dl = fmtDate(msg.timestamp);
+        const seps = messagesEl.querySelectorAll(".date-sep");
+        const lastSep = seps[seps.length - 1];
+        if (!lastSep || lastSep.textContent !== dl) {
+          const sep = document.createElement("div");
+          sep.className = "date-sep";
+          sep.textContent = dl;
+          messagesEl.appendChild(sep);
+        }
+        messagesEl.appendChild(buildBubble(msg));
+        if (atBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
       }
-      messagesEl.appendChild(buildBubble(msg));
-      if (atBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
       // Mark this message as read immediately (we're looking at it)
       setLastReadId("ch_" + msg.channel_idx, msg.id);
     } else {
       // Background channel: only count as unread if newer than last read point
-      if ((msg.id || 0) > getLastReadId("ch_" + msg.channel_idx)) ch.unread++;
+      if (!isSenderFiltered && (msg.id || 0) > getLastReadId("ch_" + msg.channel_idx)) ch.unread++;
       // If nothing selected yet, auto-select this channel
       if (currentIdx === null) {
         selectChannel(msg.channel_idx);
@@ -2146,6 +2230,10 @@
         for (const [k] of contactsMap) { if (k === packet.pubkey) contactsMap.delete(k); }
         updateContactsCount();
         if (document.getElementById("page-contacts").classList.contains("active")) renderContacts();
+      } else if (packet.type === "filter_config") {
+        filteredSenders.clear();
+        for (const s of (packet.filtered_senders || [])) filteredSenders.add(s.toLowerCase());
+        renderMessages();
       }
     });
 

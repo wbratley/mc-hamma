@@ -24,6 +24,7 @@ HISTORY_FILE = Path("chat_history.json")
 DM_HISTORY_DIR = Path("dm_history")
 CONTACT_STATS_FILE = Path("contact_stats.json")
 SMART_ADD_FILE = Path("smart_add_config.json")
+FILTERED_SENDERS_FILE = Path("filtered_senders.json")
 HISTORY_MAX  = 1000
 
 connected_clients: Set[WebSocket] = set()
@@ -38,6 +39,7 @@ autoadd_config: int = -1    # -1 = unknown; 0 = off; 1+ = on
 smart_add_config: dict = {"nodes": False, "paths": False, "chatters": False}
 neighbors: dict = {}        # last-hop hash (hex) -> neighbor entry
 relay_windows: dict = {}    # channel_idx -> relay tracking entry
+filtered_senders: set = set()  # lowercase sender names to suppress
 _rx_scratch: deque = deque(maxlen=20)  # FIFO queue of RX_LOG_DATA path stashes for GRP_TXT
 mc_instance = None
 
@@ -148,6 +150,25 @@ def save_contact_stats() -> None:
         CONTACT_STATS_FILE.write_text(json.dumps(contact_stats))
     except Exception as exc:
         logger.warning(f"Could not save contact stats: {exc}")
+
+
+def load_filtered_senders() -> None:
+    if not FILTERED_SENDERS_FILE.exists():
+        return
+    try:
+        data = json.loads(FILTERED_SENDERS_FILE.read_text())
+        if isinstance(data, list):
+            filtered_senders.update(s.lower() for s in data if isinstance(s, str))
+        logger.info(f"Loaded {len(filtered_senders)} filtered senders")
+    except Exception as exc:
+        logger.warning(f"Could not load filtered_senders: {exc}")
+
+
+def save_filtered_senders() -> None:
+    try:
+        FILTERED_SENDERS_FILE.write_text(json.dumps(sorted(filtered_senders)))
+    except Exception as exc:
+        logger.warning(f"Could not save filtered_senders: {exc}")
 
 
 def load_smart_add_config() -> None:
@@ -312,6 +333,7 @@ async def meshcore_listener() -> None:
                     "rssi": rx.get("rssi"),
                     "sender_lat": None,
                     "sender_lon": None,
+                    "filtered": sender.lower() in filtered_senders,
                 }
                 message_buffer.append(msg)
                 save_history()
@@ -661,6 +683,20 @@ async def handle_purge_contacts() -> None:
     await broadcast({"type": "contacts_cleared"})
 
 
+async def handle_set_sender_filter(packet: dict) -> None:
+    sender = (packet.get("sender") or "").strip().lower()
+    if not sender:
+        return
+    muted = bool(packet.get("muted", True))
+    if muted:
+        filtered_senders.add(sender)
+    else:
+        filtered_senders.discard(sender)
+    save_filtered_senders()
+    logger.info(f"Sender filter: {sender!r} -> {'muted' if muted else 'unmuted'}")
+    await broadcast({"type": "filter_config", "filtered_senders": sorted(filtered_senders)})
+
+
 async def handle_send_dm(packet: dict) -> None:
     text        = packet.get("text", "").strip()
     contact_key = packet.get("contact_key", "")
@@ -750,6 +786,7 @@ async def lifespan(app: FastAPI):
     load_history()
     load_contact_stats()
     load_smart_add_config()
+    load_filtered_senders()
     # Pre-load any saved per-contact DM history
     if DM_HISTORY_DIR.exists():
         for f in DM_HISTORY_DIR.glob("*.json"):
@@ -819,6 +856,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         # Smart-add config
         await websocket.send_text(json.dumps({"type": "smart_add_config", "config": dict(smart_add_config)}))
 
+        # Filtered senders
+        await websocket.send_text(json.dumps({"type": "filter_config", "filtered_senders": sorted(filtered_senders)}))
+
         # Pending contacts
         if pending_contacts:
             await websocket.send_text(json.dumps({
@@ -853,6 +893,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 await handle_remove_contact(packet)
             elif packet.get("type") == "purge_contacts":
                 await handle_purge_contacts()
+            elif packet.get("type") == "set_sender_filter":
+                await handle_set_sender_filter(packet)
     except WebSocketDisconnect:
         pass
     finally:
