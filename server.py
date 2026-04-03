@@ -802,7 +802,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             all_dms = []
             for buf in dm_buffers.values():
                 all_dms.extend(buf)
-            all_dms.sort(key=lambda m: m["timestamp"])
+            all_dms.sort(key=lambda m: m.get("id", 0))
             await websocket.send_text(
                 json.dumps({"type": "dm_history", "messages": all_dms})
             )

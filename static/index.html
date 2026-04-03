@@ -961,6 +961,23 @@
     return d.toLocaleDateString([], { weekday: "long", month: "short", day: "numeric" });
   }
 
+  // ── Unread persistence (localStorage) ───────────────────────────────────
+  // Stores the highest message id seen per channel/DM when the user last
+  // viewed it.  Messages with id <= that value are considered already read.
+  function _lrStore() {
+    try { return JSON.parse(localStorage.getItem("lastReadIds") || "{}"); }
+    catch { return {}; }
+  }
+  function getLastReadId(key) { return _lrStore()[key] || 0; }
+  function setLastReadId(key, id) {
+    if (!id) return;
+    const s = _lrStore(); s[key] = id;
+    try { localStorage.setItem("lastReadIds", JSON.stringify(s)); } catch {}
+  }
+  function maxMsgId(msgs) {
+    return msgs.reduce((m, x) => Math.max(m, x.id || 0), 0);
+  }
+
   // ── Channel store ────────────────────────────────────────────────────────
   // Map<channel_idx, { name, messages: [], unread: 0 }>
   const channels = new Map();
@@ -1043,12 +1060,16 @@
   function selectChannel(idx) {
     currentIdx = idx;
     const ch = channels.get(idx);
-    if (ch) ch.unread = 0;
+    if (ch) {
+      ch.unread = 0;
+      setLastReadId("ch_" + idx, maxMsgId(ch.messages));
+    }
     dropdown.classList.remove("open");
     channelBtn.classList.remove("open");
     channelBtn.setAttribute("aria-expanded", false);
     updateChannelBtn();
     renderDropdown();
+    updateBtnBadge();
     renderMessages();
     updateCompose();
     // Always switch back to the chat page
@@ -1311,7 +1332,6 @@
     if (msg.channel_idx === currentIdx) {
       // Append to live view
       const dl = fmtDate(msg.timestamp);
-      // Check if we need a date separator (compare against last rendered date)
       const seps = messagesEl.querySelectorAll(".date-sep");
       const lastSep = seps[seps.length - 1];
       if (!lastSep || lastSep.textContent !== dl) {
@@ -1320,14 +1340,14 @@
         sep.textContent = dl;
         messagesEl.appendChild(sep);
       }
-      const bubble = buildBubble(msg);
-      // Only animate new live messages, not history replays
-      messagesEl.appendChild(bubble);
+      messagesEl.appendChild(buildBubble(msg));
       if (atBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
+      // Mark this message as read immediately (we're looking at it)
+      setLastReadId("ch_" + msg.channel_idx, msg.id);
     } else {
-      // Background channel: increment unread
-      ch.unread++;
-      // If this is the first message in any channel and nothing is selected, auto-select
+      // Background channel: only count as unread if newer than last read point
+      if ((msg.id || 0) > getLastReadId("ch_" + msg.channel_idx)) ch.unread++;
+      // If nothing selected yet, auto-select this channel
       if (currentIdx === null) {
         selectChannel(msg.channel_idx);
         return;
@@ -1899,7 +1919,10 @@
     if (chat.messages.some(m => m.id === msg.id)) return;
     chat.messages.push(msg);
     chat.lastTs = Math.max(chat.lastTs, msg.timestamp);
-    if (currentDmKey !== key) {
+    if (currentDmKey === key) {
+      // Viewing this thread — mark read immediately
+      setLastReadId("dm_" + key, msg.id);
+    } else if ((msg.id || 0) > getLastReadId("dm_" + key)) {
       chat.unread++;
       updateNavChatsUnread();
     }
@@ -1970,6 +1993,7 @@
     if (!chat) return;
     currentDmKey = key;
     chat.unread = 0;
+    setLastReadId("dm_" + key, maxMsgId(chat.messages));
     updateNavChatsUnread();
     if (chatsPageEl.classList.contains("active")) renderChatsList();
 
@@ -2075,7 +2099,8 @@
       let packet;
       try { packet = JSON.parse(evt.data); } catch { return; }
       if (packet.type === "history") {
-        const sorted = [...packet.messages].sort((a, b) => a.timestamp - b.timestamp);
+        // Sort by id (receive order) not timestamp — device clocks can be wrong
+        const sorted = [...packet.messages].sort((a, b) => (a.id || 0) - (b.id || 0));
         sorted.forEach(processMessage);
       } else if (packet.type === "message") {
         processMessage(packet);
