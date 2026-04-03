@@ -39,6 +39,17 @@ smart_add_config: dict = {"nodes": False, "paths": False, "chatters": False}
 neighbors: dict = {}        # last-hop hash (hex) -> neighbor entry
 relay_windows: dict = {}    # channel_idx -> relay tracking entry
 _rx_scratch: deque = deque(maxlen=20)  # FIFO queue of RX_LOG_DATA path stashes for GRP_TXT
+
+# ── Advert tracking ──────────────────────────────────────────────────────────
+ADVERT_WINDOW_SECS  = 60       # seconds to listen for responses after each advert
+ADVERT_HISTORY_MAX  = 50       # keep last N advert sessions
+ADVERT_TIME_BUCKETS = 10       # sparkline: 10 × 6s = 60s window
+
+_advert_id_counter: count      = count(1)
+_active_advert_windows: dict   = {}   # advert_id -> window dict
+advert_history: list           = []   # completed advert summaries (oldest first)
+advert_schedule: dict          = {"enabled": False, "interval_secs": 300, "flood": False}
+_advert_schedule_task          = None
 mc_instance = None
 
 RELAY_WINDOW_SECS = 20      # how long to listen for echoes after sending
@@ -439,6 +450,32 @@ async def meshcore_listener() -> None:
                 logger.info(f"Last-hop {hop_hash!r} ({contact.get('name', '?')}) snr={snr} rssi={rssi}")
                 await broadcast(serialize_neighbor(n))
 
+                # Feed active advert response windows
+                for win in list(_active_advert_windows.values()):
+                    elapsed = now_ts - win["sent_at"]
+                    bucket  = min(int(elapsed / 6), ADVERT_TIME_BUCKETS - 1)
+                    win["time_buckets"][bucket] += 1
+                    r = win["responses"].setdefault(hop_hash, {
+                        "hash": hop_hash, "name": contact.get("name"),
+                        "snr_list": [], "rssi_list": [], "count": 0,
+                    })
+                    r["snr_list"].append(snr)
+                    if rssi is not None:
+                        r["rssi_list"].append(rssi)
+                    r["count"] += 1
+                    await broadcast({
+                        "type": "advert_update",
+                        "id":   win["id"],
+                        "node": {
+                            "hash":     hop_hash,
+                            "name":     r["name"] or contact.get("name"),
+                            "count":    r["count"],
+                            "avg_snr":  round(sum(r["snr_list"])  / len(r["snr_list"]),  1),
+                            "avg_rssi": round(sum(r["rssi_list"]) / len(r["rssi_list"]), 1)
+                                        if r["rssi_list"] else None,
+                        },
+                    })
+
             async def on_contact_msg(event) -> None:
                 """Handle incoming direct (contact) messages."""
                 payload    = event.payload
@@ -552,6 +589,98 @@ async def handle_set_smart_add(packet: dict) -> None:
     save_smart_add_config()
     logger.info(f"Smart-add config updated: {smart_add_config}")
     await broadcast({"type": "smart_add_config", "config": dict(smart_add_config)})
+
+
+def serialize_advert(win: dict) -> dict:
+    nodes = []
+    for r in win["responses"].values():
+        snrs  = r["snr_list"]
+        rssis = r["rssi_list"]
+        nodes.append({
+            "hash":     r["hash"],
+            "name":     r["name"],
+            "count":    r["count"],
+            "avg_snr":  round(sum(snrs)  / len(snrs),  1) if snrs  else None,
+            "avg_rssi": round(sum(rssis) / len(rssis), 1) if rssis else None,
+        })
+    nodes.sort(key=lambda n: n["count"], reverse=True)
+    all_snrs = [s for r in win["responses"].values() for s in r["snr_list"]]
+    return {
+        "id":              win["id"],
+        "flood":           win["flood"],
+        "sent_at":         win["sent_at"],
+        "total_responses": sum(n["count"] for n in nodes),
+        "node_count":      len(nodes),
+        "avg_snr":         round(sum(all_snrs) / len(all_snrs), 1) if all_snrs else None,
+        "time_series":     win["time_buckets"],
+        "nodes":           nodes,
+    }
+
+
+async def _advert_window_close(advert_id: int) -> None:
+    await asyncio.sleep(ADVERT_WINDOW_SECS)
+    win = _active_advert_windows.pop(advert_id, None)
+    if not win:
+        return
+    summary = serialize_advert(win)
+    advert_history.append(summary)
+    if len(advert_history) > ADVERT_HISTORY_MAX:
+        advert_history.pop(0)
+    logger.info(
+        f"Advert #{advert_id} closed: {summary['node_count']} nodes, "
+        f"{summary['total_responses']} responses"
+    )
+    await broadcast({"type": "advert_complete", "advert": summary})
+
+
+async def do_send_advert(flood: bool = False) -> None:
+    if mc_instance is None:
+        return
+    try:
+        await mc_instance.commands.send_advert(flood=flood)
+        advert_id = next(_advert_id_counter)
+        now = int(datetime.now(timezone.utc).timestamp())
+        win = {
+            "id":           advert_id,
+            "flood":        flood,
+            "sent_at":      now,
+            "responses":    {},
+            "time_buckets": [0] * ADVERT_TIME_BUCKETS,
+        }
+        _active_advert_windows[advert_id] = win
+        logger.info(f"Sent {'flood ' if flood else ''}advert #{advert_id}")
+        await broadcast({"type": "advert_sent", "id": advert_id, "flood": flood, "sent_at": now})
+        asyncio.create_task(_advert_window_close(advert_id))
+    except Exception as exc:
+        logger.error(f"send_advert failed: {exc}")
+
+
+async def _advert_schedule_loop() -> None:
+    try:
+        while True:
+            await asyncio.sleep(advert_schedule["interval_secs"])
+            if advert_schedule["enabled"]:
+                await do_send_advert(advert_schedule["flood"])
+    except asyncio.CancelledError:
+        pass
+
+
+async def handle_send_advert(packet: dict) -> None:
+    await do_send_advert(flood=bool(packet.get("flood", False)))
+
+
+async def handle_set_advert_schedule(packet: dict) -> None:
+    global _advert_schedule_task
+    advert_schedule["enabled"]       = bool(packet.get("enabled", False))
+    advert_schedule["interval_secs"] = max(30, int(packet.get("interval_secs", 300)))
+    advert_schedule["flood"]         = bool(packet.get("flood", False))
+    if _advert_schedule_task:
+        _advert_schedule_task.cancel()
+        _advert_schedule_task = None
+    if advert_schedule["enabled"]:
+        _advert_schedule_task = asyncio.create_task(_advert_schedule_loop())
+    logger.info(f"Advert schedule: {advert_schedule}")
+    await broadcast({"type": "advert_schedule", "schedule": dict(advert_schedule)})
 
 
 async def handle_set_autoadd(packet: dict) -> None:
@@ -826,6 +955,16 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 "contacts": [serialize_pending(c) for c in pending_contacts.values()],
             }))
 
+        # Advert history + schedule
+        await websocket.send_text(json.dumps({
+            "type":    "advert_history",
+            "adverts": list(advert_history),
+        }))
+        await websocket.send_text(json.dumps({
+            "type":     "advert_schedule",
+            "schedule": dict(advert_schedule),
+        }))
+
         # Neighbor snapshot
         if neighbors:
             await websocket.send_text(json.dumps({
@@ -853,6 +992,10 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 await handle_remove_contact(packet)
             elif packet.get("type") == "purge_contacts":
                 await handle_purge_contacts()
+            elif packet.get("type") == "send_advert":
+                await handle_send_advert(packet)
+            elif packet.get("type") == "set_advert_schedule":
+                await handle_set_advert_schedule(packet)
     except WebSocketDisconnect:
         pass
     finally:
