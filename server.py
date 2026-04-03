@@ -38,7 +38,7 @@ autoadd_config: int = -1    # -1 = unknown; 0 = off; 1+ = on
 smart_add_config: dict = {"nodes": False, "paths": False, "chatters": False}
 neighbors: dict = {}        # last-hop hash (hex) -> neighbor entry
 relay_windows: dict = {}    # channel_idx -> relay tracking entry
-_rx_scratch: dict = {}      # RX_LOG_DATA → CHANNEL_MSG_RECV correlation
+_rx_scratch: deque = deque(maxlen=20)  # FIFO queue of RX_LOG_DATA path stashes for GRP_TXT
 mc_instance = None
 
 RELAY_WINDOW_SECS = 20      # how long to listen for echoes after sending
@@ -286,8 +286,8 @@ async def meshcore_listener() -> None:
                     sender = payload.get("pubkey_prefix", "Unknown")
                     text   = raw_text
 
-                # Consume path info stashed by on_rx_log
-                rx = _rx_scratch.pop("last_grp_txt", {})
+                # Consume the oldest stashed path info (FIFO, matches RX_LOG_DATA order)
+                rx = _rx_scratch.popleft() if _rx_scratch else {}
                 path_str       = rx.get("path", "")
                 path_hash_size = rx.get("path_hash_size", 1)
                 chars_per_hop  = path_hash_size * 2
@@ -371,14 +371,16 @@ async def meshcore_listener() -> None:
                 if not path or snr is None:
                     return
 
-                # Stash path info for GRP_TXT so on_channel_msg can pick it up
+                # Push path info onto FIFO queue for on_channel_msg to consume.
+                # Using a queue (not a single slot) so back-to-back messages
+                # don't overwrite each other before CHANNEL_MSG_RECV fires.
                 if payload.get("payload_type") == 5:
-                    _rx_scratch["last_grp_txt"] = {
+                    _rx_scratch.append({
                         "path": path,
                         "path_hash_size": path_hash_size,
                         "snr":  snr,
                         "rssi": rssi,
-                    }
+                    })
 
                 # Last entry in path = the node that directly handed us the packet
                 chars_per_hop = path_hash_size * 2
