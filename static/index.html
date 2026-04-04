@@ -2294,6 +2294,21 @@
   }
 
   // ── Leaflet init — only called after map div is visible ──────────────────
+  let _mapRafId = null;
+
+  function _startMapRaf() {
+    if (_mapRafId) return;
+    function loop() {
+      if (!_mapMode) { _mapRafId = null; return; }
+      renderGraphPositions();
+      _mapRafId = requestAnimationFrame(loop);
+    }
+    _mapRafId = requestAnimationFrame(loop);
+  }
+  function _stopMapRaf() {
+    if (_mapRafId) { cancelAnimationFrame(_mapRafId); _mapRafId = null; }
+  }
+
   function initLeaflet() {
     if (_leafletMap || !window.L) return;
     _leafletMap = L.map("graph-map", { zoomControl: true, attributionControl: true })
@@ -2301,16 +2316,20 @@
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       attribution: "© OpenStreetMap contributors", maxZoom: 19,
     }).addTo(_leafletMap);
-    _leafletMap.on("move zoom moveend zoomend", () => {
-      if (_mapMode) renderGraphPositions();
-    });
+    // During pan/zoom animations Leaflet moves tiles via CSS transform but our
+    // SVG is a separate absolutely-positioned element — it doesn't move with the
+    // tiles unless we reproject every animation frame.  The RAF loop in
+    // _startMapRaf() handles this; here we just make sure it's running whenever
+    // the map is moving and does one final render when motion ends.
+    _leafletMap.on("movestart zoomstart", () => { if (_mapMode) _startMapRaf(); });
+    _leafletMap.on("moveend zoomend",     () => { if (_mapMode) { _stopMapRaf(); renderGraphPositions(); } });
   }
 
   // ── Map-mode position engine ─────────────────────────────────────────────
   // Returns Map<id, {x,y}> in container-pixel space for every node.
   // Geo-nodes: projected from lat/lon.
   // Floating nodes: centroid of linked neighbours (multi-pass so chains work).
-  // True isolates: scattered around map centre.
+  // True isolates: scattered around the geographic centroid of all geo-nodes.
   function computeMapPositions() {
     const pos = new Map();
     const edgesArr = [...graphEdges.values()];
@@ -2344,13 +2363,31 @@
       }
     }
 
-    // Step 4 — true isolates: small circle around map centre
-    const ctr = _leafletMap.latLngToContainerPoint(_leafletMap.getCenter());
+    // Step 4 — true isolates: scatter around the geographic centroid of all
+    // positioned nodes so they reproject correctly on zoom (unlike using
+    // latLngToContainerPoint(getCenter()) which is always the same pixel).
     const isolates = _gSimNodes.filter(n => !pos.has(n.id));
-    isolates.forEach((n, i) => {
-      const a = (i / Math.max(1, isolates.length)) * 2 * Math.PI;
-      pos.set(n.id, { x: ctr.x + 80 * Math.cos(a), y: ctr.y + 80 * Math.sin(a) });
-    });
+    if (isolates.length) {
+      // Compute the lat/lon centroid of all geo-nodes to use as anchor
+      const geoNodes = _gSimNodes.filter(n => {
+        const ll = n._mapVirtualLatLon ?? (n.lat != null ? [n.lat, n.lon] : null);
+        return ll != null;
+      });
+      let anchorPt;
+      if (geoNodes.length) {
+        const lats = geoNodes.map(n => (n._mapVirtualLatLon ?? [n.lat, n.lon])[0]);
+        const lons = geoNodes.map(n => (n._mapVirtualLatLon ?? [n.lat, n.lon])[1]);
+        const avgLat = lats.reduce((s,v)=>s+v,0)/lats.length;
+        const avgLon = lons.reduce((s,v)=>s+v,0)/lons.length;
+        anchorPt = _leafletMap.latLngToContainerPoint([avgLat, avgLon]);
+      } else {
+        anchorPt = _leafletMap.latLngToContainerPoint(_leafletMap.getCenter());
+      }
+      isolates.forEach((n, i) => {
+        const a = (i / Math.max(1, isolates.length)) * 2 * Math.PI;
+        pos.set(n.id, { x: anchorPt.x + 80*Math.cos(a), y: anchorPt.y + 80*Math.sin(a) });
+      });
+    }
 
     return pos;
   }
@@ -2591,6 +2628,7 @@
       const doRender = () => {
         if (done) return; done = true;
         renderGraphPositions();
+        _startMapRaf(); // keep positions in sync with any subsequent zoom/pan animations
       };
 
       if (pts.length >= 2) {
@@ -2606,6 +2644,7 @@
       }
 
     } else {
+      _stopMapRaf();
       mapEl.classList.add("hidden");
       svgEl.classList.remove("map-mode");
       if (btn) btn.textContent = "Map view";
