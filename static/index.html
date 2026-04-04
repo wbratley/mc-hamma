@@ -2335,8 +2335,10 @@
     const edgesArr = [...graphEdges.values()];
 
     // Step 1 — geo-nodes (real or virtual from a previous drag)
+    // Treat 0,0 (null island — GPS-less devices default) as no location
     for (const n of _gSimNodes) {
-      const ll = n._mapVirtualLatLon ?? (n.lat != null ? [n.lat, n.lon] : null);
+      const ll = n._mapVirtualLatLon ??
+        (n.lat != null && n.lon != null && !(n.lat === 0 && n.lon === 0) ? [n.lat, n.lon] : null);
       if (ll) {
         const pt = _leafletMap.latLngToContainerPoint(ll);
         pos.set(n.id, { x: pt.x, y: pt.y });
