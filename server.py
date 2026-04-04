@@ -646,6 +646,8 @@ def _node_info(h: str) -> dict:
         "name":      c.get("name") or (h[:8] if h != "self" else "You"),
         "node_type": c.get("node_type"),
         "is_self":   h == "self",
+        "lat":       c.get("lat"),
+        "lon":       c.get("lon"),
     }
 
 
