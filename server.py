@@ -641,13 +641,18 @@ def record_link(a: str, b: str) -> None:
 
 def _node_info(h: str) -> dict:
     c = find_contact(h) if h != "self" else {}
+    lat = c.get("lat")
+    lon = c.get("lon")
+    # Devices without GPS often report 0,0 (null island) — treat as no location
+    if lat == 0 and lon == 0:
+        lat, lon = None, None
     return {
         "id":        h,
         "name":      c.get("name") or (h[:8] if h != "self" else "You"),
         "node_type": c.get("node_type"),
         "is_self":   h == "self",
-        "lat":       c.get("lat"),
-        "lon":       c.get("lon"),
+        "lat":       lat,
+        "lon":       lon,
     }
 
 
