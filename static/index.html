@@ -494,8 +494,8 @@
     /* In map mode the SVG passes pointer events through to Leaflet */
     #graph-svg.map-mode { cursor: default; pointer-events: none; }
     #graph-svg.map-mode .gnode { pointer-events: all; cursor: pointer; }
-    #graph-svg.map-mode .graph-link { pointer-events: none; }
-    .graph-link { stroke-linecap: round; }
+    #graph-svg.map-mode .graph-link { pointer-events: stroke; cursor: pointer; }
+    .graph-link { stroke-linecap: round; cursor: pointer; pointer-events: stroke; }
     .graph-node-circle { stroke-width: 2; cursor: pointer; }
     .graph-node-label {
       fill: var(--text); font-size: 11px; font-family: inherit;
@@ -2253,30 +2253,29 @@
   const graphNodes = new Map(); // id → node data
   const graphEdges = new Map(); // "a:b" → edge data
 
-  // Simulation state — these are the live objects mutated by D3
-  let _gSimNodes  = [];   // same objects as bound to DOM
-  let _gSimEdges  = [];   // same objects as bound to DOM
-
-  // D3 selections stored at bind-time so tick never has to re-query the DOM
-  let _gLinkSel   = null;
-  let _gNodeSel   = null;
-
-  let graphSim    = null;
-  let graphG      = null;
+  // Force-mode state
+  let _gSimNodes = [];   // live objects bound to DOM (simulation mutates x/y)
+  let _gLinkSel  = null; // stored D3 selections — tick never re-queries the DOM
+  let _gNodeSel  = null;
+  let graphSim   = null;
+  let graphG     = null;
   let graphInited = false;
 
-  // Map mode state
-  let _leafletMap  = null;
-  let _mapMode     = false;   // false = force layout, true = geo map
+  // Map mode
+  let _leafletMap = null;
+  let _mapMode    = false;
+
+  // Per-node cached degree (rebuilt in updateGraphViz, used in renderGraphPositions)
+  let _degree = new Map();
+  let _maxDeg = 1;
 
   const NODE_COLORS = {
-    self:      "#4f8ef7",
-    repeater:  "#6fcf97",
-    gateway:   "#f2c94c",
-    room:      "#56ccf2",
-    unknown:   "#7b82a8",
+    self:     "#4f8ef7",
+    repeater: "#6fcf97",
+    gateway:  "#f2c94c",
+    room:     "#56ccf2",
+    unknown:  "#7b82a8",
   };
-
   function nodeColor(n) {
     if (n.is_self)         return NODE_COLORS.self;
     if (n.node_type === 1) return NODE_COLORS.repeater;
@@ -2287,50 +2286,253 @@
 
   function graphContainerDims() {
     const el = document.getElementById("graph-container");
-    if (el) {
-      const r = el.getBoundingClientRect();
-      if (r.width > 10) return { W: r.width, H: r.height };
-    }
-    // fallback
-    const header  = document.querySelector("header");
+    if (el) { const r = el.getBoundingClientRect(); if (r.width > 10) return { W: r.width, H: r.height }; }
+    const header = document.querySelector("header");
     const toolbar = document.getElementById("graph-toolbar");
-    return {
-      W: Math.max(window.innerWidth, 300),
-      H: Math.max(window.innerHeight
-          - (header  ? header.offsetHeight  : 0)
-          - (toolbar ? toolbar.offsetHeight : 0), 200),
-    };
+    return { W: Math.max(window.innerWidth, 300),
+             H: Math.max(window.innerHeight - (header?.offsetHeight||0) - (toolbar?.offsetHeight||0), 200) };
   }
 
-  // ── Leaflet map init — called only when map div is visible ─────────────
+  // ── Leaflet init — only called after map div is visible ──────────────────
   function initLeaflet() {
     if (_leafletMap || !window.L) return;
     _leafletMap = L.map("graph-map", { zoomControl: true, attributionControl: true })
       .setView([51.5, -0.09], 10);
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      attribution: "© OpenStreetMap contributors",
-      maxZoom: 19,
+      attribution: "© OpenStreetMap contributors", maxZoom: 19,
     }).addTo(_leafletMap);
-    // On every pan/zoom, re-render immediately — no simulation lag
     _leafletMap.on("move zoom moveend zoomend", () => {
       if (_mapMode) renderGraphPositions();
     });
   }
 
-  // Convert lat/lon → pixel coords in the SVG/container space via Leaflet
-  function _latLonToSvgPx(lat, lon) {
-    if (!_leafletMap) return null;
-    const pt = _leafletMap.latLngToContainerPoint([lat, lon]);
-    return { x: pt.x, y: pt.y };
+  // ── Map-mode position engine ─────────────────────────────────────────────
+  // Returns Map<id, {x,y}> in container-pixel space for every node.
+  // Geo-nodes: projected from lat/lon.
+  // Floating nodes: centroid of linked neighbours (multi-pass so chains work).
+  // True isolates: scattered around map centre.
+  function computeMapPositions() {
+    const pos = new Map();
+    const edgesArr = [...graphEdges.values()];
+
+    // Step 1 — geo-nodes (real or virtual from a previous drag)
+    for (const n of _gSimNodes) {
+      const ll = n._mapVirtualLatLon ?? (n.lat != null ? [n.lat, n.lon] : null);
+      if (ll) {
+        const pt = _leafletMap.latLngToContainerPoint(ll);
+        pos.set(n.id, { x: pt.x, y: pt.y });
+      }
+    }
+
+    // Step 2 — adjacency
+    const adj = new Map(_gSimNodes.map(n => [n.id, []]));
+    for (const e of edgesArr) { adj.get(e.a)?.push(e.b); adj.get(e.b)?.push(e.a); }
+
+    // Step 3 — centroid for floating nodes, iterate until stable
+    for (let pass = 0, changed = true; pass < 15 && changed; pass++) {
+      changed = false;
+      for (const n of _gSimNodes) {
+        if (pos.has(n.id)) continue;
+        const known = (adj.get(n.id) || []).filter(id => pos.has(id));
+        if (known.length) {
+          pos.set(n.id, {
+            x: known.reduce((s, id) => s + pos.get(id).x, 0) / known.length,
+            y: known.reduce((s, id) => s + pos.get(id).y, 0) / known.length,
+          });
+          changed = true;
+        }
+      }
+    }
+
+    // Step 4 — true isolates: small circle around map centre
+    const ctr = _leafletMap.latLngToContainerPoint(_leafletMap.getCenter());
+    const isolates = _gSimNodes.filter(n => !pos.has(n.id));
+    isolates.forEach((n, i) => {
+      const a = (i / Math.max(1, isolates.length)) * 2 * Math.PI;
+      pos.set(n.id, { x: ctr.x + 80 * Math.cos(a), y: ctr.y + 80 * Math.sin(a) });
+    });
+
+    return pos;
   }
 
-  // ── SVG init ────────────────────────────────────────────────────────────
+  // ── Unified render — called from sim tick (force) and Leaflet events (map) ─
+  function renderGraphPositions() {
+    if (!_gLinkSel || !_gNodeSel) return;
+
+    if (_mapMode && _leafletMap) {
+      // Compute positions and write them into the node data objects
+      const pos = computeMapPositions();
+      const nodeById = new Map(_gSimNodes.map(n => [n.id, n]));
+      for (const n of _gSimNodes) { const p = pos.get(n.id); if (p) { n.x = p.x; n.y = p.y; } }
+      // forceLink isn't running in map mode — resolve source/target strings to objects
+      _gLinkSel.each(d => {
+        if (typeof d.source === "string") d.source = nodeById.get(d.source);
+        if (typeof d.target === "string") d.target = nodeById.get(d.target);
+      });
+    }
+
+    _gNodeSel.attr("transform", d => `translate(${d.x ?? 0},${d.y ?? 0})`);
+    _gLinkSel
+      .attr("x1", d => d.source?.x ?? 0).attr("y1", d => d.source?.y ?? 0)
+      .attr("x2", d => d.target?.x ?? 0).attr("y2", d => d.target?.y ?? 0);
+  }
+
+  function graphTick() { renderGraphPositions(); }
+
+  // ── Click tooltip ────────────────────────────────────────────────────────
+  let _graphTooltip = null;
+  let _tooltipPinned = false;
+
+  function showGraphTooltip(event, text) {
+    if (!_graphTooltip) {
+      _graphTooltip = document.createElement("div");
+      _graphTooltip.className = "graph-tooltip";
+      _graphTooltip.style.cursor = "pointer";
+      _graphTooltip.title = "Click to close";
+      _graphTooltip.addEventListener("click", hideGraphTooltip);
+      document.body.appendChild(_graphTooltip);
+    }
+    _graphTooltip.innerHTML = text.split("\n").join("<br>");
+    _graphTooltip.style.display = "block";
+    _tooltipPinned = true;
+    positionGraphTooltip(event);
+    event.stopPropagation();
+  }
+  function positionGraphTooltip(event) {
+    if (!_graphTooltip) return;
+    _graphTooltip.style.left = Math.min(event.clientX + 14, window.innerWidth  - 230) + "px";
+    _graphTooltip.style.top  = Math.min(event.clientY + 14, window.innerHeight - 120) + "px";
+  }
+  function hideGraphTooltip() {
+    if (_graphTooltip) _graphTooltip.style.display = "none";
+    _tooltipPinned = false;
+  }
+  // Click anywhere else dismisses the tooltip
+  document.addEventListener("click", () => { if (_tooltipPinned) hideGraphTooltip(); });
+
+  // ── Main bind — called when graph data changes or page becomes active ────
+  function updateGraphViz() {
+    if (!graphInited || !graphG) return;
+
+    const nodesArr = [...graphNodes.values()];
+    const edgesArr = [...graphEdges.values()];
+
+    // Degree & strength for visual scaling
+    _degree = new Map();
+    for (const e of edgesArr) {
+      _degree.set(e.a, (_degree.get(e.a) || 0) + e.strength);
+      _degree.set(e.b, (_degree.get(e.b) || 0) + e.strength);
+    }
+    _maxDeg = Math.max(..._degree.values(), 1);
+    const maxStr = Math.max(...edgesArr.map(e => e.strength), 1);
+
+    // ── Links ────────────────────────────────────────────────────────────
+    edgesArr.forEach(e => { e.source = e.a; e.target = e.b; });
+
+    const linkUpd = graphG.select(".links").selectAll("line.graph-link")
+      .data(edgesArr, d => `${d.a}:${d.b}`);
+
+    linkUpd.enter().append("line").attr("class", "graph-link")
+      .merge(linkUpd)
+      .attr("stroke",       d => `rgba(79,142,247,${0.15 + 0.65*(d.strength/maxStr)})`)
+      .attr("stroke-width", d => 1 + 4*(d.strength/maxStr))
+      .on("click", (event, d) => showGraphTooltip(event,
+          `${graphNodes.get(d.a)?.name || d.a.slice(0,8)} ↔ ${graphNodes.get(d.b)?.name || d.b.slice(0,8)}\n` +
+          `Observations: ${d.count}\nStrength: ${d.strength.toFixed(2)}\nLast seen: ${fmtAgo(d.last_seen)}`));
+    linkUpd.exit().remove();
+    _gLinkSel = graphG.select(".links").selectAll("line.graph-link");
+
+    // ── Nodes — carry sim position across data refreshes ─────────────────
+    const prevMap = new Map(_gSimNodes.map(n => [n.id, n]));
+    const { W, H } = graphContainerDims();
+    for (const n of nodesArr) {
+      const prev = prevMap.get(n.id);
+      if (prev) {
+        n.x = prev.x; n.y = prev.y; n.vx = prev.vx; n.vy = prev.vy;
+        if (prev.fx != null) { n.fx = prev.fx; n.fy = prev.fy; }
+        if (prev._mapVirtualLatLon) n._mapVirtualLatLon = prev._mapVirtualLatLon;
+      } else {
+        n.x = W/2 + (Math.random()-0.5)*W*0.5;
+        n.y = H/2 + (Math.random()-0.5)*H*0.5;
+      }
+    }
+    _gSimNodes = nodesArr;
+
+    const nodeBind = graphG.select(".gnodes").selectAll("g.gnode")
+      .data(_gSimNodes, d => d.id);
+
+    const nodeEnter = nodeBind.enter().append("g").attr("class", "gnode")
+      .call(d3.drag()
+        .on("start", (event, d) => {
+          // Geo-nodes are fixed in map mode — don't allow drag
+          if (_mapMode && d.lat != null && d.lon != null && !d._mapVirtualLatLon) return;
+          if (!_mapMode && !event.active) graphSim.alphaTarget(0.3).restart();
+          d.fx = d.x; d.fy = d.y;
+        })
+        .on("drag", (event, d) => {
+          d.x = event.x; d.y = event.y;
+          if (!_mapMode) d.fx = event.x; d.fy = event.y;
+          if (_mapMode) renderGraphPositions(); // live feedback
+        })
+        .on("end", (event, d) => {
+          if (!_mapMode) {
+            if (!event.active) graphSim.alphaTarget(0);
+            // Release floating nodes in force mode so sim continues to act on them
+            if (d.lat == null && d.lon == null) { d.fx = null; d.fy = null; }
+          } else {
+            // Map mode: store drop position as virtual lat/lon so it follows the map
+            d._mapVirtualLatLon = _leafletMap.containerPointToLatLng([event.x, event.y]);
+            renderGraphPositions();
+          }
+        })
+      );
+
+    nodeEnter.append("circle").attr("class", "graph-node-circle");
+    nodeEnter.append("text").attr("class", "graph-node-label").attr("text-anchor", "middle");
+
+    const nodeMerge = nodeEnter.merge(nodeBind);
+    nodeMerge.select("circle.graph-node-circle")
+      .attr("r",      d => 8 + 12*((_degree.get(d.id)||0)/_maxDeg))
+      .attr("fill",   d => nodeColor(d))
+      .attr("stroke", d => d3.color(nodeColor(d)).brighter(0.8))
+      .attr("stroke-width", d => d.lat != null ? 3 : 2) // thicker ring for geo-nodes
+      .on("click", (event, d) => {
+        const links = edgesArr.filter(e => e.a===d.id || e.b===d.id).length;
+        showGraphTooltip(event,
+          `${d.name}\n` +
+          (d.is_self ? "📱 This device\n" :
+            d.node_type != null ? `Type: ${["Client","Repeater","Room","Gateway"][d.node_type]||"Unknown"}\n` : "") +
+          (d.lat  != null ? `📍 ${d.lat.toFixed(5)}, ${d.lon.toFixed(5)}\n` : "📍 No location\n") +
+          `Links: ${links}   Strength: ${(_degree.get(d.id)||0).toFixed(1)}\n` +
+          (d.avg_snr  != null ? `Avg SNR: ${d.avg_snr} dB\n`  : "") +
+          (d.avg_rssi != null ? `Avg RSSI: ${d.avg_rssi} dBm` : ""));
+      });
+
+    nodeMerge.select("text.graph-node-label")
+      .text(d => d.name)
+      .attr("dy", d => -(10 + 12*((_degree.get(d.id)||0)/_maxDeg)));
+
+    nodeBind.exit().remove();
+    _gNodeSel = graphG.select(".gnodes").selectAll("g.gnode");
+
+    // ── Drive simulation (force mode) or render directly (map mode) ───────
+    if (!_mapMode) {
+      graphSim.force("center", d3.forceCenter(W/2, H/2));
+      graphSim.nodes(_gSimNodes);
+      graphSim.force("link").links(edgesArr);
+      graphSim.alpha(0.6).restart();
+    } else {
+      renderGraphPositions();
+    }
+
+    const countEl = document.getElementById("graph-node-count");
+    if (countEl) countEl.textContent = `${nodesArr.length} nodes · ${edgesArr.length} links`;
+  }
+
+  // ── SVG init ─────────────────────────────────────────────────────────────
   function initGraphSvg() {
     const svgEl = document.getElementById("graph-svg");
     if (!svgEl || !window.d3) return;
-
-    // Note: Leaflet is NOT initialized here — the map div is hidden.
-    // It is initialized lazily in setGraphMapMode(true) once the div is visible.
 
     const svg = d3.select("#graph-svg");
     svg.selectAll("*").remove();
@@ -2339,18 +2541,17 @@
       if (!_mapMode) graphG.attr("transform", e.transform);
     });
     svg.call(zoom);
-    svg.__d3zoom = zoom;
+    svgEl.__d3zoom = zoom;
 
     graphG = svg.append("g");
     graphG.append("g").attr("class", "links");
     graphG.append("g").attr("class", "gnodes");
 
     const { W, H } = graphContainerDims();
-
     graphSim = d3.forceSimulation()
       .force("link",      d3.forceLink().id(d => d.id).distance(120).strength(0.5))
       .force("charge",    d3.forceManyBody().strength(-450))
-      .force("center",    d3.forceCenter(W / 2, H / 2))
+      .force("center",    d3.forceCenter(W/2, H/2))
       .force("collision", d3.forceCollide(34))
       .alphaDecay(0.015)
       .on("tick", graphTick);
@@ -2359,168 +2560,7 @@
     updateGraphViz();
   }
 
-  // ── Render positions — called from tick AND directly from Leaflet events ─
-  function renderGraphPositions() {
-    if (!_gLinkSel || !_gNodeSel) return;
-    _gNodeSel.attr("transform", d => {
-      // In map mode: geo-nodes that haven't been freed track the map projection
-      if (_mapMode && d.lat != null && d.lon != null && !d._geoFreed) {
-        const px = _latLonToSvgPx(d.lat, d.lon);
-        if (px) { d.x = px.x; d.y = px.y; d.fx = px.x; d.fy = px.y; }
-      }
-      return `translate(${d.x ?? 0},${d.y ?? 0})`;
-    });
-    _gLinkSel
-      .attr("x1", d => d.source.x ?? 0).attr("y1", d => d.source.y ?? 0)
-      .attr("x2", d => d.target.x ?? 0).attr("y2", d => d.target.y ?? 0);
-  }
-
-  function graphTick() { renderGraphPositions(); }
-
-  let _graphTooltip = null;
-
-  // ── Main update — call whenever graph data changes or view is shown ──────
-  function updateGraphViz() {
-    if (!graphInited || !graphG) return;
-
-    const nodesArr = [...graphNodes.values()];
-    const edgesArr = [...graphEdges.values()];
-
-    // ── Degree / strength for visual scaling ──────────────────────────────
-    const degree = new Map();
-    for (const e of edgesArr) {
-      degree.set(e.a, (degree.get(e.a) || 0) + e.strength);
-      degree.set(e.b, (degree.get(e.b) || 0) + e.strength);
-    }
-    const maxDeg = Math.max(...degree.values(), 1);
-    const maxStr = Math.max(...edgesArr.map(e => e.strength), 1);
-
-    // ── Links ─────────────────────────────────────────────────────────────
-    // edgesArr objects are passed directly to forceLink, which will mutate
-    // their .source/.target from id-strings to node-object refs.
-    // The DOM must be bound to the SAME objects so graphTick can read .source.x
-    edgesArr.forEach(e => { e.source = e.a; e.target = e.b; });
-
-    const linkUpdate = graphG.select(".links")
-      .selectAll("line.graph-link")
-      .data(edgesArr, d => `${d.a}:${d.b}`);
-
-    linkUpdate.enter().append("line").attr("class", "graph-link")
-      .merge(linkUpdate)
-      .attr("stroke",       d => `rgba(79,142,247,${0.15 + 0.65 * (d.strength / maxStr)})`)
-      .attr("stroke-width", d => 1 + 4 * (d.strength / maxStr))
-      .on("mouseover", (event, d) => showGraphTooltip(event,
-          `${graphNodes.get(d.a)?.name || d.a.slice(0,8)} ↔ ${graphNodes.get(d.b)?.name || d.b.slice(0,8)}\n` +
-          `Observations: ${d.count}\nStrength: ${d.strength.toFixed(2)}\nLast: ${fmtAgo(d.last_seen)}`))
-      .on("mousemove", positionGraphTooltip)
-      .on("mouseout",  hideGraphTooltip);
-
-    linkUpdate.exit().remove();
-
-    // Store the live selection (enter+update merged) for the tick
-    _gLinkSel = graphG.select(".links").selectAll("line.graph-link");
-
-    // ── Nodes ─────────────────────────────────────────────────────────────
-    // Carry existing sim positions onto incoming data objects so nodes don't
-    // teleport when updateGraphViz is called with fresh data from the server.
-    const prevMap = new Map(_gSimNodes.map(n => [n.id, n]));
-    const { W, H } = graphContainerDims();
-
-    for (const n of nodesArr) {
-      const prev = prevMap.get(n.id);
-      if (prev) {
-        n.x = prev.x; n.y = prev.y; n.vx = prev.vx; n.vy = prev.vy;
-        if (prev._geoPinned) { n.fx = prev.fx; n.fy = prev.fy; n._geoPinned = true; }
-        else if (prev.fx != null) { n.fx = prev.fx; n.fy = prev.fy; }
-      } else {
-        // Brand-new node: spread randomly so forces have something to work with
-        n.x  = W / 2 + (Math.random() - 0.5) * W * 0.5;
-        n.y  = H / 2 + (Math.random() - 0.5) * H * 0.5;
-      }
-    }
-    _gSimNodes = nodesArr; // update the live list
-
-    const nodeBind = graphG.select(".gnodes")
-      .selectAll("g.gnode")
-      .data(_gSimNodes, d => d.id);
-
-    const nodeEnter = nodeBind.enter().append("g").attr("class", "gnode")
-      .call(d3.drag()
-        .on("start", (event, d) => {
-          if (!event.active) graphSim.alphaTarget(0.3).restart();
-          d.fx = d.x; d.fy = d.y;
-        })
-        .on("drag", (event, d) => {
-          d.fx = event.x; d.fy = event.y;
-          // Dragging a geo-node frees it from its geographic pin
-          if (d.lat != null && d.lon != null) d._geoFreed = true;
-        })
-        .on("end", (event, d) => {
-          if (!event.active) graphSim.alphaTarget(0);
-          // In force mode: release floating nodes so forces continue to act
-          // In map mode: keep fx/fy so node stays where dropped
-          // Geo-freed nodes always stay where dropped (both modes)
-          if (!_mapMode && d.lat == null && d.lon == null) {
-            d.fx = null; d.fy = null;
-          }
-        })
-      );
-
-    nodeEnter.append("circle").attr("class", "graph-node-circle");
-    nodeEnter.append("text").attr("class", "graph-node-label")
-      .attr("text-anchor", "middle");
-
-    // Badge: small marker for geo-enabled nodes
-    nodeEnter.append("circle").attr("class", "graph-geo-badge")
-      .attr("r", 4).attr("cx", 0).attr("fill", "#fff")
-      .style("display", "none");
-
-    const nodeMerge = nodeEnter.merge(nodeBind);
-
-    nodeMerge.select("circle.graph-node-circle")
-      .attr("r",      d => 8 + 12 * ((degree.get(d.id) || 0) / maxDeg))
-      .attr("fill",   d => nodeColor(d))
-      .attr("stroke", d => d3.color(nodeColor(d)).brighter(0.8))
-      .on("mouseover", (event, d) => {
-        const links = edgesArr.filter(e => e.a === d.id || e.b === d.id).length;
-        showGraphTooltip(event,
-          `${d.name}\n` +
-          (d.is_self ? "This device\n" : (d.node_type != null ? `Type: ${["Client","Repeater","Room","Gateway"][d.node_type] || "Unknown"}\n` : "")) +
-          (d.lat != null ? `📍 ${d.lat.toFixed(5)}, ${d.lon.toFixed(5)}\n` : "") +
-          `Links: ${links}  Strength: ${(degree.get(d.id) || 0).toFixed(1)}`);
-      })
-      .on("mousemove", positionGraphTooltip)
-      .on("mouseout",  hideGraphTooltip);
-
-    nodeMerge.select("text.graph-node-label")
-      .text(d => d.name)
-      .attr("dy", d => -(10 + 12 * ((degree.get(d.id) || 0) / maxDeg)));
-
-    // Show geo badge dot below nodes that have a location
-    nodeMerge.select("circle.graph-geo-badge")
-      .attr("cy", d => 10 + 12 * ((degree.get(d.id) || 0) / maxDeg) + 5)
-      .style("display", d => (d.lat != null ? null : "none"))
-      .attr("fill", "#4caf50");
-
-    nodeBind.exit().remove();
-
-    // Store the live merged selection for the tick
-    _gNodeSel = graphG.select(".gnodes").selectAll("g.gnode");
-
-    // ── Feed simulation ───────────────────────────────────────────────────
-    graphSim.force("center", d3.forceCenter(W / 2, H / 2));
-    graphSim.nodes(_gSimNodes);
-    graphSim.force("link").links(edgesArr); // edgesArr objects already have source/target set
-    graphSim.alpha(0.6).restart();
-
-    // In map mode: pin geo-nodes to their current map projection
-    if (_mapMode) _pinAllGeoNodes();
-
-    const countEl = document.getElementById("graph-node-count");
-    if (countEl) countEl.textContent = `${nodesArr.length} nodes · ${edgesArr.length} links`;
-  }
-
-  // ── Map/force toggle ─────────────────────────────────────────────────────
+  // ── Map / force toggle ────────────────────────────────────────────────────
   function setGraphMapMode(on) {
     _mapMode = on;
     const mapEl    = document.getElementById("graph-map");
@@ -2529,128 +2569,73 @@
     const resetBtn = document.getElementById("graph-reset-btn");
 
     if (on) {
-      // 1. Show map div FIRST — Leaflet needs a visible, sized container
+      // Show map first so Leaflet can measure the container
       mapEl.classList.remove("hidden");
       svgEl.classList.add("map-mode");
       if (btn) btn.textContent = "Force layout";
-      if (resetBtn) resetBtn.textContent = "Re-pin locations";
+      if (resetBtn) resetBtn.textContent = "Reset positions";
 
-      // 2. Disable D3 zoom; clear any existing SVG transform
+      // Stop simulation — map mode doesn't need it
+      graphSim.stop();
       d3.select("#graph-svg").on(".zoom", null);
       graphG.attr("transform", null);
 
-      // 3. Init Leaflet now (div is visible so it can measure correctly),
-      //    or tell an existing instance to recalculate its container size.
-      if (!_leafletMap) {
-        initLeaflet();
-      } else {
-        _leafletMap.invalidateSize({ animate: false });
-      }
+      // Init Leaflet now (visible), or recalculate size if already inited
+      if (!_leafletMap) { initLeaflet(); } else { _leafletMap.invalidateSize({ animate: false }); }
 
-      // 4. Fit map to geo-nodes then pin — wait for the viewport to settle
-      //    before reading container points (otherwise we get stale coords).
+      // Fit to geo-nodes then render — wait for viewport to settle
       const pts = [...graphNodes.values()]
-        .filter(n => n.lat != null && n.lon != null)
-        .map(n => [n.lat, n.lon]);
+        .filter(n => n.lat != null && n.lon != null).map(n => [n.lat, n.lon]);
 
-      let _pinDone = false;
-      const doPin = () => {
-        if (_pinDone) return; _pinDone = true;
-        _pinAllGeoNodes();
+      let done = false;
+      const doRender = () => {
+        if (done) return; done = true;
         renderGraphPositions();
-        if (graphSim) graphSim.alpha(0.3).restart();
       };
 
       if (pts.length >= 2) {
-        _leafletMap.once("moveend", doPin);
-        _leafletMap.fitBounds(L.latLngBounds(pts), { padding: [40, 40], animate: false });
-        setTimeout(doPin, 300); // fallback if moveend doesn't fire
+        _leafletMap.once("moveend", doRender);
+        _leafletMap.fitBounds(L.latLngBounds(pts), { padding: [50, 50], animate: false });
+        setTimeout(doRender, 300);
       } else if (pts.length === 1) {
-        _leafletMap.once("moveend", doPin);
+        _leafletMap.once("moveend", doRender);
         _leafletMap.setView(pts[0], 13, { animate: false });
-        setTimeout(doPin, 300);
+        setTimeout(doRender, 300);
       } else {
-        doPin(); // no geo-nodes
+        doRender();
       }
+
     } else {
       mapEl.classList.add("hidden");
       svgEl.classList.remove("map-mode");
       if (btn) btn.textContent = "Map view";
       if (resetBtn) resetBtn.textContent = "Reset layout";
-      // Re-enable D3 zoom
       if (svgEl.__d3zoom) d3.select("#graph-svg").call(svgEl.__d3zoom);
-      // Release geo-pins so force layout can freely arrange
-      for (const n of _gSimNodes) {
-        n._geoFreed = false;
-        if (n.lat != null && n.lon != null) { n.fx = null; n.fy = null; }
-      }
+
       const { W, H } = graphContainerDims();
-      graphSim.force("center", d3.forceCenter(W / 2, H / 2));
+      graphSim.force("center", d3.forceCenter(W/2, H/2));
+      graphSim.nodes(_gSimNodes);
+      graphSim.force("link").links([...graphEdges.values()]);
       graphSim.alpha(0.8).restart();
     }
   }
 
-  // Pin all geo-nodes to their current map projection (respects _geoFreed)
-  function _pinAllGeoNodes() {
-    for (const n of _gSimNodes) {
-      if (n.lat != null && n.lon != null && !n._geoFreed) {
-        const px = _latLonToSvgPx(n.lat, n.lon);
-        if (px) { n.fx = px.x; n.fy = px.y; n.x = px.x; n.y = px.y; }
-      }
-    }
-  }
-
-  // Re-pin all geo-nodes (clear freed state) — called by reset button in map mode
-  function _resetGeoNodes() {
-    for (const n of _gSimNodes) {
-      if (n.lat != null && n.lon != null) {
-        n._geoFreed = false;
-        const px = _latLonToSvgPx(n.lat, n.lon);
-        if (px) { n.fx = px.x; n.fy = px.y; n.x = px.x; n.y = px.y; }
-      }
-    }
-    renderGraphPositions();
-  }
-
-// ── Tooltip helpers ──────────────────────────────────────────────────────
-  function showGraphTooltip(event, text) {
-    if (!_graphTooltip) {
-      _graphTooltip = document.createElement("div");
-      _graphTooltip.className = "graph-tooltip";
-      document.body.appendChild(_graphTooltip);
-    }
-    _graphTooltip.style.display = "block";
-    _graphTooltip.innerHTML = text.split("\n").join("<br>");
-    positionGraphTooltip(event);
-  }
-  function positionGraphTooltip(event) {
-    if (!_graphTooltip) return;
-    _graphTooltip.style.left = Math.min(event.clientX + 12, window.innerWidth  - 220) + "px";
-    _graphTooltip.style.top  = Math.min(event.clientY + 12, window.innerHeight - 100) + "px";
-  }
-  function hideGraphTooltip() {
-    if (_graphTooltip) _graphTooltip.style.display = "none";
-  }
-
-  // ── Data ingestion ───────────────────────────────────────────────────────
+  // ── Data ingestion ────────────────────────────────────────────────────────
   function processGraphSnapshot(data) {
     for (const n of (data.nodes || [])) graphNodes.set(n.id, n);
     for (const e of (data.edges || [])) graphEdges.set(`${e.a}:${e.b}`, e);
     if (document.getElementById("page-graph").classList.contains("active")) updateGraphViz();
   }
 
-  // ── Toolbar buttons ──────────────────────────────────────────────────────
-  document.getElementById("graph-map-toggle-btn").addEventListener("click", () => {
-    setGraphMapMode(!_mapMode);
-  });
+  // ── Toolbar buttons ───────────────────────────────────────────────────────
+  document.getElementById("graph-map-toggle-btn").addEventListener("click", () => setGraphMapMode(!_mapMode));
 
   document.getElementById("graph-reset-btn").addEventListener("click", () => {
-    if (!graphSim) return;
     if (_mapMode) {
-      // Re-pin all geo-nodes to their geographic coordinates
-      _resetGeoNodes();
+      // Clear all manual drag overrides — nodes snap back to computed positions
+      for (const n of _gSimNodes) n._mapVirtualLatLon = null;
+      renderGraphPositions();
     } else {
-      // Free all manually-dragged nodes and reheat
       graphSim.nodes().forEach(n => { n.fx = null; n.fy = null; });
       graphSim.alpha(1).restart();
     }
