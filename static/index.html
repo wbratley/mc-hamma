@@ -482,7 +482,7 @@
       border-bottom: 1px solid var(--border); flex-shrink: 0;
       font-size: 12px;
     }
-    #graph-svg { flex: 1; min-height: 0; display: block; width: 100%; cursor: grab; }
+    #graph-svg { flex: 1; min-height: 0; height: 1px; display: block; width: 100%; cursor: grab; }
     #graph-svg:active { cursor: grabbing; }
     .graph-link { stroke-linecap: round; }
     .graph-node-circle { stroke-width: 2; cursor: pointer; }
@@ -1559,12 +1559,11 @@
       if (page === "pending") renderPending();
       if (page === "adverts") renderAdverts();
       if (page === "graph") {
-        // requestAnimationFrame ensures the browser has painted the page
-        // and computed the SVG layout before we read clientWidth/clientHeight
-        requestAnimationFrame(() => {
+        // Double RAF: first frame applies display:flex, second has correct layout
+        requestAnimationFrame(() => requestAnimationFrame(() => {
           if (!graphInited) initGraphSvg();
           else updateGraphViz();
-        });
+        }));
       }
       if (page === "nodes") renderNodes();
     });
@@ -2259,13 +2258,15 @@
   }
 
   function graphDims() {
-    const svgEl = document.getElementById("graph-svg");
-    // getBoundingClientRect is reliable even on flex children
-    const r = svgEl ? svgEl.getBoundingClientRect() : {};
-    return {
-      W: r.width  || svgEl?.parentElement?.clientWidth  || window.innerWidth,
-      H: r.height || svgEl?.parentElement?.clientHeight || 400,
-    };
+    // Use window dimensions minus fixed UI chrome — always works regardless
+    // of whether the SVG has been laid out yet.
+    const header  = document.querySelector("header");
+    const toolbar = document.getElementById("graph-toolbar");
+    const W = window.innerWidth;
+    const H = window.innerHeight
+            - (header  ? header.offsetHeight  : 0)
+            - (toolbar ? toolbar.offsetHeight : 0);
+    return { W: Math.max(W, 300), H: Math.max(H, 200) };
   }
 
   function initGraphSvg() {
@@ -2398,18 +2399,26 @@
     const { W, H } = graphDims();
     graphSim.force("center", d3.forceCenter(W / 2, H / 2));
 
+    // IMPORTANT: simNodes[i] must be the SAME object as nodesArr[i] so that
+    // the D3 selection (bound to nodesArr) sees the x/y the sim writes.
+    // For existing nodes: copy sim position onto the current data object.
+    // For new nodes: give them a random spread position.
     const prevNodeMap = new Map(graphSim.nodes().map(n => [n.id, n]));
     const simNodes = nodesArr.map(n => {
       const prev = prevNodeMap.get(n.id);
-      if (prev) return Object.assign(prev, n);
-      return Object.assign(n, {
-        x: W / 2 + (Math.random() - 0.5) * W * 0.5,
-        y: H / 2 + (Math.random() - 0.5) * H * 0.5,
-      });
+      if (prev) {
+        n.x = prev.x;  n.y  = prev.y;
+        n.vx = prev.vx; n.vy = prev.vy;
+        if (prev.fx != null) { n.fx = prev.fx; n.fy = prev.fy; }
+      } else {
+        n.x = W / 2 + (Math.random() - 0.5) * W * 0.5;
+        n.y = H / 2 + (Math.random() - 0.5) * H * 0.5;
+      }
+      return n;
     });
     graphSim.nodes(simNodes);
     graphSim.force("link").links(edgesArr.map(e => ({ ...e, source: e.a, target: e.b })));
-    graphSim.alpha(0.4).restart();
+    graphSim.alpha(0.6).restart();
 
     // Update counter
     const countEl = document.getElementById("graph-node-count");
