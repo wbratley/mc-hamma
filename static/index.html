@@ -1559,8 +1559,12 @@
       if (page === "pending") renderPending();
       if (page === "adverts") renderAdverts();
       if (page === "graph") {
-        if (!graphInited) initGraphSvg();
-        else updateGraphViz();
+        // requestAnimationFrame ensures the browser has painted the page
+        // and computed the SVG layout before we read clientWidth/clientHeight
+        requestAnimationFrame(() => {
+          if (!graphInited) initGraphSvg();
+          else updateGraphViz();
+        });
       }
       if (page === "nodes") renderNodes();
     });
@@ -2254,6 +2258,16 @@
     return NODE_COLORS.unknown;
   }
 
+  function graphDims() {
+    const svgEl = document.getElementById("graph-svg");
+    // getBoundingClientRect is reliable even on flex children
+    const r = svgEl ? svgEl.getBoundingClientRect() : {};
+    return {
+      W: r.width  || svgEl?.parentElement?.clientWidth  || window.innerWidth,
+      H: r.height || svgEl?.parentElement?.clientHeight || 400,
+    };
+  }
+
   function initGraphSvg() {
     const svgEl = document.getElementById("graph-svg");
     if (!svgEl || !window.d3) return;
@@ -2269,14 +2283,14 @@
     graphG.append("g").attr("class", "links");
     graphG.append("g").attr("class", "gnodes");
 
-    const W = svgEl.clientWidth  || 600;
-    const H = svgEl.clientHeight || 400;
+    const { W, H } = graphDims();
 
     graphSim = d3.forceSimulation()
-      .force("link",      d3.forceLink().id(d => d.id).distance(90).strength(d => Math.min(1, d.strength * 0.3 + 0.1)))
-      .force("charge",    d3.forceManyBody().strength(-200))
+      .force("link",      d3.forceLink().id(d => d.id).distance(110).strength(0.4))
+      .force("charge",    d3.forceManyBody().strength(-400))
       .force("center",    d3.forceCenter(W / 2, H / 2))
-      .force("collision", d3.forceCollide(28))
+      .force("collision", d3.forceCollide(32))
+      .alphaDecay(0.015)   // slower decay → more time to spread before settling
       .on("tick", graphTick);
 
     graphInited = true;
@@ -2378,15 +2392,24 @@
 
     nodeSel.exit().remove();
 
-    // Feed simulation
+    // Feed simulation — preserve positions of existing nodes;
+    // spread new nodes randomly around the canvas centre so they
+    // don't all start at (0,0) before the forces act on them.
+    const { W, H } = graphDims();
+    graphSim.force("center", d3.forceCenter(W / 2, H / 2));
+
     const prevNodeMap = new Map(graphSim.nodes().map(n => [n.id, n]));
     const simNodes = nodesArr.map(n => {
       const prev = prevNodeMap.get(n.id);
-      return prev ? Object.assign(prev, n) : n;
+      if (prev) return Object.assign(prev, n);
+      return Object.assign(n, {
+        x: W / 2 + (Math.random() - 0.5) * W * 0.5,
+        y: H / 2 + (Math.random() - 0.5) * H * 0.5,
+      });
     });
     graphSim.nodes(simNodes);
     graphSim.force("link").links(edgesArr.map(e => ({ ...e, source: e.a, target: e.b })));
-    graphSim.alpha(0.3).restart();
+    graphSim.alpha(0.4).restart();
 
     // Update counter
     const countEl = document.getElementById("graph-node-count");
