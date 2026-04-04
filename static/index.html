@@ -2302,18 +2302,16 @@
     };
   }
 
-  // ── Leaflet map init ────────────────────────────────────────────────────
+  // ── Leaflet map init — called only when map div is visible ─────────────
   function initLeaflet() {
     if (_leafletMap || !window.L) return;
-    const mapEl = document.getElementById("graph-map");
-    if (!mapEl) return;
     _leafletMap = L.map("graph-map", { zoomControl: true, attributionControl: true })
       .setView([51.5, -0.09], 10);
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       attribution: "© OpenStreetMap contributors",
       maxZoom: 19,
     }).addTo(_leafletMap);
-    // On every map move/zoom, re-render node positions immediately (no simulation lag)
+    // On every pan/zoom, re-render immediately — no simulation lag
     _leafletMap.on("move zoom moveend zoomend", () => {
       if (_mapMode) renderGraphPositions();
     });
@@ -2331,7 +2329,8 @@
     const svgEl = document.getElementById("graph-svg");
     if (!svgEl || !window.d3) return;
 
-    initLeaflet();
+    // Note: Leaflet is NOT initialized here — the map div is hidden.
+    // It is initialized lazily in setGraphMapMode(true) once the div is visible.
 
     const svg = d3.select("#graph-svg");
     svg.selectAll("*").remove();
@@ -2530,18 +2529,49 @@
     const resetBtn = document.getElementById("graph-reset-btn");
 
     if (on) {
+      // 1. Show map div FIRST — Leaflet needs a visible, sized container
       mapEl.classList.remove("hidden");
       svgEl.classList.add("map-mode");
       if (btn) btn.textContent = "Force layout";
       if (resetBtn) resetBtn.textContent = "Re-pin locations";
-      // Disable D3 zoom — Leaflet handles pan/zoom in map mode
+
+      // 2. Disable D3 zoom; clear any existing SVG transform
       d3.select("#graph-svg").on(".zoom", null);
-      // Remove any transform on the root <g> — SVG coords = Leaflet container coords
       graphG.attr("transform", null);
-      // Auto-fit to nodes that have a location, then pin them
-      _fitMapToGeoNodes();
-      // Small delay so Leaflet finishes fitting before we read container points
-      setTimeout(() => { _pinAllGeoNodes(); renderGraphPositions(); graphSim.alpha(0.3).restart(); }, 50);
+
+      // 3. Init Leaflet now (div is visible so it can measure correctly),
+      //    or tell an existing instance to recalculate its container size.
+      if (!_leafletMap) {
+        initLeaflet();
+      } else {
+        _leafletMap.invalidateSize({ animate: false });
+      }
+
+      // 4. Fit map to geo-nodes then pin — wait for the viewport to settle
+      //    before reading container points (otherwise we get stale coords).
+      const pts = [...graphNodes.values()]
+        .filter(n => n.lat != null && n.lon != null)
+        .map(n => [n.lat, n.lon]);
+
+      let _pinDone = false;
+      const doPin = () => {
+        if (_pinDone) return; _pinDone = true;
+        _pinAllGeoNodes();
+        renderGraphPositions();
+        if (graphSim) graphSim.alpha(0.3).restart();
+      };
+
+      if (pts.length >= 2) {
+        _leafletMap.once("moveend", doPin);
+        _leafletMap.fitBounds(L.latLngBounds(pts), { padding: [40, 40], animate: false });
+        setTimeout(doPin, 300); // fallback if moveend doesn't fire
+      } else if (pts.length === 1) {
+        _leafletMap.once("moveend", doPin);
+        _leafletMap.setView(pts[0], 13, { animate: false });
+        setTimeout(doPin, 300);
+      } else {
+        doPin(); // no geo-nodes
+      }
     } else {
       mapEl.classList.add("hidden");
       svgEl.classList.remove("map-mode");
@@ -2582,19 +2612,7 @@
     renderGraphPositions();
   }
 
-  function _fitMapToGeoNodes() {
-    if (!_leafletMap) return;
-    const pts = [...graphNodes.values()]
-      .filter(n => n.lat != null && n.lon != null)
-      .map(n => [n.lat, n.lon]);
-    if (pts.length === 1) {
-      _leafletMap.setView(pts[0], 13);
-    } else if (pts.length > 1) {
-      _leafletMap.fitBounds(L.latLngBounds(pts), { padding: [40, 40] });
-    }
-  }
-
-  // ── Tooltip helpers ──────────────────────────────────────────────────────
+// ── Tooltip helpers ──────────────────────────────────────────────────────
   function showGraphTooltip(event, text) {
     if (!_graphTooltip) {
       _graphTooltip = document.createElement("div");
