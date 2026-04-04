@@ -508,6 +508,44 @@
       z-index: 999; pointer-events: none; box-shadow: 0 4px 16px rgba(0,0,0,0.5);
       max-width: 200px; line-height: 1.6;
     }
+    /* ── Path pulse animation ── */
+    .path-dot { pointer-events: none; }
+    @keyframes linkFlash {
+      0%   { stroke: #ffe066; filter: drop-shadow(0 0 4px #ffe066); stroke-width: 5; }
+      100% { stroke: inherit; filter: none; stroke-width: inherit; }
+    }
+    .graph-link.link-active { animation: linkFlash 0.9s ease-out forwards; }
+    /* ── New node animations ── */
+    @keyframes nodeAppear {
+      0%   { opacity: 0; r: 0; }
+      60%  { opacity: 1; r: calc(var(--nr) * 1.4); }
+      100% { opacity: 1; r: var(--nr); }
+    }
+    @keyframes nodeGlow {
+      0%, 100% { filter: drop-shadow(0 0 0px transparent); }
+      50%       { filter: drop-shadow(0 0 8px #ffe066); }
+    }
+    .gnode.is-new > circle.graph-node-circle {
+      stroke: #ffe066 !important; stroke-width: 3 !important;
+      animation: nodeGlow 1.6s ease-in-out infinite;
+    }
+    .gnode.just-appeared > circle.graph-node-circle {
+      animation: nodeAppear 0.5s cubic-bezier(.17,.89,.32,1.28) forwards, nodeGlow 1.6s ease-in-out 0.5s infinite;
+    }
+    /* ── Graph message toast ── */
+    #graph-toast {
+      position: absolute; bottom: 16px; right: 16px; z-index: 10;
+      background: var(--surface); border: 1px solid var(--border);
+      border-left: 3px solid var(--accent);
+      border-radius: 8px; padding: 10px 14px; font-size: 12px;
+      max-width: 260px; box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+      opacity: 0; transform: translateY(8px);
+      transition: opacity 0.2s, transform 0.2s;
+      pointer-events: none; line-height: 1.5;
+    }
+    #graph-toast.visible { opacity: 1; transform: translateY(0); pointer-events: auto; }
+    #graph-toast .toast-sender { font-weight: 600; color: var(--accent); margin-bottom: 2px; }
+    #graph-toast .toast-text { color: var(--text); word-break: break-word; }
     .graph-legend {
       display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
       font-size: 11px; color: var(--text-muted);
@@ -915,7 +953,7 @@
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12H3"/><path d="M21 12h-2"/><path d="M12 3v2"/><path d="M12 19v2"/><path d="M5.64 5.64l1.42 1.42"/><path d="M16.95 16.95l1.41 1.41"/><path d="M16.95 7.05l1.41-1.41"/><path d="M5.64 18.36l1.42-1.42"/><circle cx="12" cy="12" r="4"/></svg>
         Adverts
       </button>
-      <button class="nav-item" data-page="graph">
+      <button class="nav-item" data-page="graph" id="nav-graph">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="5" cy="12" r="2"/><circle cx="19" cy="5" r="2"/><circle cx="19" cy="19" r="2"/><circle cx="12" cy="12" r="2"/><line x1="7" y1="12" x2="10" y2="12"/><line x1="14" y1="12" x2="17" y2="6"/><line x1="14" y1="12" x2="17" y2="18"/></svg>
         Graph
       </button>
@@ -1087,6 +1125,10 @@
   <div id="graph-container">
     <div id="graph-map" class="hidden"></div>
     <svg id="graph-svg"></svg>
+    <div id="graph-toast">
+      <div class="toast-sender"></div>
+      <div class="toast-text"></div>
+    </div>
   </div>
 </div>
 
@@ -1527,6 +1569,14 @@
     if (dropdown.classList.contains("open")) renderDropdown();
     // Update btn badge indicator: show total unread across non-selected channels
     updateBtnBadge();
+
+    // Graph path animation + toast (always — graph tracks all channels)
+    if (graphInited) {
+      const pathHashes = (msg.path || []).map(h => (typeof h === "object" ? h.hash : h));
+      animateMessagePath(msg.sender_hash || "", pathHashes);
+      // Show toast if graph page is open OR any time (shows overlay on graph page)
+      if (_graphPageOpen) showGraphToast(msg.sender, msg.text, msg.hops || 0);
+    }
   }
 
   // Show a total unread dot on the button when dropdown is closed
@@ -1565,6 +1615,7 @@
     btn.addEventListener("click", () => {
       navMenu.classList.remove("open");
       const page = btn.dataset.page;
+      if (page !== "graph") _graphPageOpen = false; // leaving graph page
       document.querySelectorAll(".page").forEach(p => p.classList.remove("active"));
       document.getElementById("page-" + page).classList.add("active");
       navMenu.querySelectorAll(".nav-item").forEach(b => b.classList.remove("active"));
@@ -1574,10 +1625,12 @@
       if (page === "pending") renderPending();
       if (page === "adverts") renderAdverts();
       if (page === "graph") {
+        _graphPageOpen = true;
         // Double RAF: first frame applies display:flex, second has correct layout
         requestAnimationFrame(() => requestAnimationFrame(() => {
           if (!graphInited) initGraphSvg();
           else updateGraphViz();
+          markGraphNodesRead(); // mark all currently-visible nodes as read
         }));
       }
       if (page === "nodes") renderNodes();
@@ -2253,6 +2306,111 @@
   const graphNodes = new Map(); // id → node data
   const graphEdges = new Map(); // "a:b" → edge data
 
+  // ── New-node tracking ────────────────────────────────────────────────────
+  // _graphKnownNodes: persisted set of node IDs the user has "seen"
+  // _graphNewNodes:   nodes that arrived since the last read — shown with badge/highlight
+  // Nodes that arrive WHILE the graph page is open get highlighted but are
+  // NOT added to known until the NEXT visit (so the user can notice them).
+  let _graphKnownNodes = new Set();
+  let _graphNewNodes   = new Set();
+  let _graphPageOpen   = false;
+
+  function _loadKnownGraphNodes() {
+    try { _graphKnownNodes = new Set(JSON.parse(localStorage.getItem("graphKnownNodes") || "[]")); }
+    catch { _graphKnownNodes = new Set(); }
+  }
+  function _saveKnownGraphNodes() {
+    localStorage.setItem("graphKnownNodes", JSON.stringify([..._graphKnownNodes]));
+  }
+  // Call when user opens the graph page — mark everything currently visible as read
+  function markGraphNodesRead() {
+    for (const id of graphNodes.keys()) _graphKnownNodes.add(id);
+    _saveKnownGraphNodes();
+    _graphNewNodes.clear();
+    updateGraphNavBadge();
+    // Remove highlight class from all nodes
+    if (graphG) graphG.select(".gnodes").selectAll("g.gnode.is-new").classed("is-new", false);
+  }
+  function updateGraphNavBadge() {
+    const btn = document.getElementById("nav-graph");
+    if (!btn) return;
+    let badge = btn.querySelector(".ch-badge");
+    const count = _graphNewNodes.size;
+    if (count > 0) {
+      if (!badge) { badge = document.createElement("span"); badge.className = "ch-badge"; btn.appendChild(badge); }
+      badge.textContent = count;
+    } else if (badge) {
+      badge.remove();
+    }
+  }
+
+  // ── Graph message toast ──────────────────────────────────────────────────
+  let _toastTimer = null;
+  function showGraphToast(sender, text, pathLen) {
+    const el = document.getElementById("graph-toast");
+    if (!el) return;
+    el.querySelector(".toast-sender").textContent = sender;
+    const hops = pathLen > 0 ? ` · ${pathLen} hop${pathLen !== 1 ? "s" : ""}` : " · direct";
+    el.querySelector(".toast-text").textContent = text.length > 80 ? text.slice(0, 80) + "…" : text;
+    el.title = `${pathLen} hop${pathLen !== 1 ? "s" : ""}`;
+    el.classList.add("visible");
+    clearTimeout(_toastTimer);
+    _toastTimer = setTimeout(() => el.classList.remove("visible"), 5000);
+    el.onclick = () => { el.classList.remove("visible"); clearTimeout(_toastTimer); };
+  }
+
+  // ── Path animation ───────────────────────────────────────────────────────
+  // Spawn a dot that travels from pixel (x1,y1) to (x2,y2) after `delay` ms
+  function _spawnDot(x1, y1, x2, y2, delay) {
+    if (!graphG) return;
+    const dot = graphG.select(".links").append("circle")
+      .attr("class", "path-dot")
+      .attr("r", 5).attr("fill", "#ffe066").attr("opacity", 0.9)
+      .attr("cx", x1).attr("cy", y1);
+    setTimeout(() => {
+      dot.transition().duration(650).ease(d3.easeLinear)
+        .attr("cx", x2).attr("cy", y2).attr("opacity", 0)
+        .on("end", () => dot.remove());
+    }, delay);
+  }
+
+  function animateMessagePath(senderHash, pathHops) {
+    // Build full chain of node IDs: sender → hops → self
+    const chain = [];
+    if (senderHash) chain.push(senderHash);
+    for (const h of pathHops) { if (h) chain.push(h); }
+    chain.push("self");
+    if (chain.length < 2 || !graphG) return;
+
+    // For each consecutive pair, find the edge and animate
+    const nodeById = new Map(_gSimNodes.map(n => [n.id, n]));
+    const delay = 0;
+    for (let i = 0; i < chain.length - 1; i++) {
+      const srcId = chain[i];
+      const dstId = chain[i + 1];
+      const src = nodeById.get(srcId);
+      const dst = nodeById.get(dstId);
+      if (!src || !dst || src.x == null || dst.x == null) continue;
+
+      const hopDelay = i * 200;
+
+      // Flash the link
+      const a = srcId < dstId ? srcId : dstId;
+      const b = srcId < dstId ? dstId : srcId;
+      if (_gLinkSel) {
+        _gLinkSel.filter(d => d.a === a && d.b === b)
+          .classed("link-active", false) // reset to re-trigger animation
+          .each(function() { void this.offsetWidth; }) // force reflow
+          .classed("link-active", true);
+        setTimeout(() => {
+          if (_gLinkSel) _gLinkSel.filter(d => d.a === a && d.b === b).classed("link-active", false);
+        }, hopDelay + 950);
+      }
+
+      _spawnDot(src.x, src.y, dst.x, dst.y, hopDelay);
+    }
+  }
+
   // Force-mode state
   let _gSimNodes = [];   // live objects bound to DOM (simulation mutates x/y)
   let _gLinkSel  = null; // stored D3 selections — tick never re-queries the DOM
@@ -2554,6 +2712,9 @@
     nodeBind.exit().remove();
     _gNodeSel = graphG.select(".gnodes").selectAll("g.gnode");
 
+    // Apply new-node highlight class (persists until markGraphNodesRead is called)
+    _gNodeSel.classed("is-new", d => _graphNewNodes.has(d.id));
+
     // ── Drive simulation (force mode) or render directly (map mode) ───────
     if (!_mapMode) {
       graphSim.force("center", d3.forceCenter(W/2, H/2));
@@ -2663,9 +2824,34 @@
 
   // ── Data ingestion ────────────────────────────────────────────────────────
   function processGraphSnapshot(data) {
-    for (const n of (data.nodes || [])) graphNodes.set(n.id, n);
+    const brandNew = []; // IDs of nodes appearing for the first time ever in this snapshot
+    for (const n of (data.nodes || [])) {
+      const isNew = !graphNodes.has(n.id);
+      graphNodes.set(n.id, n);
+      if (n.id === "self") continue;
+      if (!_graphKnownNodes.has(n.id)) {
+        _graphNewNodes.add(n.id);
+        if (isNew) brandNew.push(n.id); // genuinely just appeared
+      }
+    }
     for (const e of (data.edges || [])) graphEdges.set(`${e.a}:${e.b}`, e);
-    if (document.getElementById("page-graph").classList.contains("active")) updateGraphViz();
+
+    updateGraphNavBadge();
+
+    const onGraph = document.getElementById("page-graph").classList.contains("active");
+    if (onGraph) {
+      updateGraphViz();
+      // Play appear animation on brand-new nodes
+      if (brandNew.length && graphG) {
+        graphG.select(".gnodes").selectAll("g.gnode")
+          .filter(d => brandNew.includes(d.id))
+          .classed("just-appeared", true)
+          .each(function() {
+            const el = this;
+            setTimeout(() => d3.select(el).classed("just-appeared", false).classed("is-new", true), 600);
+          });
+      }
+    }
   }
 
   // ── Toolbar buttons ───────────────────────────────────────────────────────
@@ -2905,6 +3091,8 @@
     statusEl.className = state;
     statusEl.textContent = label;
   }
+
+  _loadKnownGraphNodes(); // restore persisted set of seen nodes
 
   function connect() {
     setStatus("reconnecting", "Connecting\u2026");
