@@ -2417,7 +2417,11 @@
       return n;
     });
     graphSim.nodes(simNodes);
-    graphSim.force("link").links(edgesArr.map(e => ({ ...e, source: e.a, target: e.b })));
+    // IMPORTANT: mutate source/target on the SAME objects the DOM is bound to.
+    // If we spread into new objects the sim resolves node refs onto the copies,
+    // but graphTick reads d.source/d.target from the DOM-bound originals (still strings → x=undefined).
+    edgesArr.forEach(e => { e.source = e.a; e.target = e.b; });
+    graphSim.force("link").links(edgesArr);
     graphSim.alpha(0.6).restart();
 
     // Update counter
