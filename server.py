@@ -340,6 +340,7 @@ async def meshcore_listener() -> None:
                     "type": "message",
                     "text": text,
                     "sender": sender,
+                    "sender_hash": sender_hash,
                     "timestamp": ts,
                     "channel_idx": channel_idx,
                     "channel_name": channel_names.get(channel_idx),
