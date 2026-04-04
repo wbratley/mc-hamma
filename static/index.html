@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>MeshCore</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -473,6 +474,38 @@
       background: var(--surface2); border-radius: 4px; padding: 1px 5px;
     }
 
+    /* ── Graph page ── */
+    #page-graph { flex-direction: column; overflow: hidden; }
+    #graph-toolbar {
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+      padding: 8px 14px; background: var(--surface);
+      border-bottom: 1px solid var(--border); flex-shrink: 0;
+      font-size: 12px;
+    }
+    #graph-svg { flex: 1; min-height: 0; display: block; width: 100%; cursor: grab; }
+    #graph-svg:active { cursor: grabbing; }
+    .graph-link { stroke-linecap: round; }
+    .graph-node-circle { stroke-width: 2; cursor: pointer; }
+    .graph-node-label {
+      fill: var(--text); font-size: 11px; font-family: inherit;
+      pointer-events: none; user-select: none;
+      text-shadow: 0 1px 3px #0f1117, 0 -1px 3px #0f1117, 1px 0 3px #0f1117, -1px 0 3px #0f1117;
+    }
+    .graph-tooltip {
+      position: fixed; background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 8px 12px; font-size: 12px;
+      z-index: 999; pointer-events: none; box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+      max-width: 200px; line-height: 1.6;
+    }
+    .graph-legend {
+      display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+      font-size: 11px; color: var(--text-muted);
+    }
+    .graph-legend-item { display: flex; align-items: center; gap: 4px; }
+    .graph-legend-dot {
+      width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+    }
+
     /* ── Nodes page ── */
     #page-nodes {
       overflow-y: auto; padding: 16px;
@@ -871,6 +904,10 @@
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12H3"/><path d="M21 12h-2"/><path d="M12 3v2"/><path d="M12 19v2"/><path d="M5.64 5.64l1.42 1.42"/><path d="M16.95 16.95l1.41 1.41"/><path d="M16.95 7.05l1.41-1.41"/><path d="M5.64 18.36l1.42-1.42"/><circle cx="12" cy="12" r="4"/></svg>
         Adverts
       </button>
+      <button class="nav-item" data-page="graph">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="5" cy="12" r="2"/><circle cx="19" cy="5" r="2"/><circle cx="19" cy="19" r="2"/><circle cx="12" cy="12" r="2"/><line x1="7" y1="12" x2="10" y2="12"/><line x1="14" y1="12" x2="17" y2="6"/><line x1="14" y1="12" x2="17" y2="18"/></svg>
+        Graph
+      </button>
       <button class="nav-item" data-page="nodes">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="3"/><circle cx="5" cy="19" r="3"/><circle cx="19" cy="19" r="3"/><line x1="12" y1="8" x2="5.5" y2="16"/><line x1="12" y1="8" x2="18.5" y2="16"/></svg>
         Nodes
@@ -1020,6 +1057,22 @@
   <div id="adverts-scroll">
     <p style="color:var(--text-muted);font-size:14px;text-align:center;margin-top:40px">No adverts sent yet</p>
   </div>
+</div>
+
+<div id="page-graph" class="page">
+  <div id="graph-toolbar">
+    <div class="graph-legend">
+      <span class="graph-legend-item"><span class="graph-legend-dot" style="background:#4f8ef7"></span>You</span>
+      <span class="graph-legend-item"><span class="graph-legend-dot" style="background:#6fcf97"></span>Repeater</span>
+      <span class="graph-legend-item"><span class="graph-legend-dot" style="background:#f2c94c"></span>Gateway</span>
+      <span class="graph-legend-item"><span class="graph-legend-dot" style="background:#56ccf2"></span>Room</span>
+      <span class="graph-legend-item"><span class="graph-legend-dot" style="background:#7b82a8"></span>Client / Unknown</span>
+    </div>
+    <span class="mgmt-spacer"></span>
+    <span id="graph-node-count" style="color:var(--text-muted);font-size:11px"></span>
+    <button class="mgmt-btn" id="graph-reset-btn">Reset layout</button>
+  </div>
+  <svg id="graph-svg"></svg>
 </div>
 
 <div id="page-nodes" class="page">
@@ -1505,6 +1558,10 @@
       if (page === "contacts") renderContacts();
       if (page === "pending") renderPending();
       if (page === "adverts") renderAdverts();
+      if (page === "graph") {
+        if (!graphInited) initGraphSvg();
+        else updateGraphViz();
+      }
       if (page === "nodes") renderNodes();
     });
   });
@@ -2174,6 +2231,205 @@
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendDm(); }
   });
 
+  // ── Network graph ────────────────────────────────────────────────────────
+  const graphNodes = new Map(); // id → node data
+  const graphEdges = new Map(); // "a:b" → edge data
+  let   graphSim   = null;
+  let   graphG     = null;      // root <g> inside the SVG
+  let   graphInited = false;
+
+  const NODE_COLORS = {
+    self:      "#4f8ef7",
+    repeater:  "#6fcf97",
+    gateway:   "#f2c94c",
+    room:      "#56ccf2",
+    unknown:   "#7b82a8",
+  };
+
+  function nodeColor(n) {
+    if (n.is_self)      return NODE_COLORS.self;
+    if (n.node_type === 1) return NODE_COLORS.repeater;
+    if (n.node_type === 3) return NODE_COLORS.gateway;
+    if (n.node_type === 2) return NODE_COLORS.room;
+    return NODE_COLORS.unknown;
+  }
+
+  function initGraphSvg() {
+    const svgEl = document.getElementById("graph-svg");
+    if (!svgEl || !window.d3) return;
+    const svg = d3.select("#graph-svg");
+    svg.selectAll("*").remove();
+
+    const zoom = d3.zoom().scaleExtent([0.1, 5]).on("zoom", (e) => {
+      graphG.attr("transform", e.transform);
+    });
+    svg.call(zoom);
+
+    graphG = svg.append("g");
+    graphG.append("g").attr("class", "links");
+    graphG.append("g").attr("class", "gnodes");
+
+    const W = svgEl.clientWidth  || 600;
+    const H = svgEl.clientHeight || 400;
+
+    graphSim = d3.forceSimulation()
+      .force("link",      d3.forceLink().id(d => d.id).distance(90).strength(d => Math.min(1, d.strength * 0.3 + 0.1)))
+      .force("charge",    d3.forceManyBody().strength(-200))
+      .force("center",    d3.forceCenter(W / 2, H / 2))
+      .force("collision", d3.forceCollide(28))
+      .on("tick", graphTick);
+
+    graphInited = true;
+    updateGraphViz();
+  }
+
+  function graphTick() {
+    if (!graphG) return;
+    graphG.select(".links").selectAll("line")
+      .attr("x1", d => d.source.x).attr("y1", d => d.source.y)
+      .attr("x2", d => d.target.x).attr("y2", d => d.target.y);
+    graphG.select(".gnodes").selectAll("g.gnode")
+      .attr("transform", d => `translate(${d.x ?? 0},${d.y ?? 0})`);
+  }
+
+  let _graphTooltip = null;
+
+  function updateGraphViz() {
+    if (!graphInited || !graphG) return;
+
+    const nodesArr = [...graphNodes.values()];
+    const edgesArr = [...graphEdges.values()];
+
+    // Compute per-node degree for sizing
+    const degree = new Map();
+    for (const e of edgesArr) {
+      degree.set(e.a, (degree.get(e.a) || 0) + e.strength);
+      degree.set(e.b, (degree.get(e.b) || 0) + e.strength);
+    }
+    const maxDeg = Math.max(...degree.values(), 1);
+
+    // Max strength for normalizing edge visuals
+    const maxStr = Math.max(...edgesArr.map(e => e.strength), 1);
+
+    // ── Links ──────────────────────────────────────────────────────────────
+    const linkSel = graphG.select(".links")
+      .selectAll("line.graph-link")
+      .data(edgesArr, d => `${d.a}:${d.b}`);
+
+    linkSel.enter().append("line")
+      .attr("class", "graph-link")
+      .merge(linkSel)
+      .attr("stroke",        d => `rgba(79,142,247,${0.15 + 0.65 * (d.strength / maxStr)})`)
+      .attr("stroke-width",  d => 1 + 4 * (d.strength / maxStr))
+      .on("mouseover", (event, d) => {
+        showGraphTooltip(event,
+          `${graphNodes.get(d.a)?.name || d.a.slice(0,8)} ↔ ${graphNodes.get(d.b)?.name || d.b.slice(0,8)}\n` +
+          `Observations: ${d.count}\nStrength: ${d.strength.toFixed(2)}\n` +
+          `Last: ${fmtAgo(d.last_seen)}`);
+      })
+      .on("mousemove", positionGraphTooltip)
+      .on("mouseout",  hideGraphTooltip);
+
+    linkSel.exit().remove();
+
+    // ── Nodes ──────────────────────────────────────────────────────────────
+    const nodeSel = graphG.select(".gnodes")
+      .selectAll("g.gnode")
+      .data(nodesArr, d => d.id);
+
+    const nodeEnter = nodeSel.enter().append("g").attr("class", "gnode")
+      .call(d3.drag()
+        .on("start", (event, d) => {
+          if (!event.active) graphSim.alphaTarget(0.3).restart();
+          d.fx = d.x; d.fy = d.y;
+        })
+        .on("drag",  (event, d) => { d.fx = event.x; d.fy = event.y; })
+        .on("end",   (event, d) => {
+          if (!event.active) graphSim.alphaTarget(0);
+          d.fx = null; d.fy = null;
+        })
+      );
+
+    nodeEnter.append("circle").attr("class", "graph-node-circle");
+    nodeEnter.append("text").attr("class", "graph-node-label")
+      .attr("text-anchor", "middle")
+      .attr("dy", "0.35em");
+
+    const nodeMerge = nodeEnter.merge(nodeSel);
+
+    nodeMerge.select("circle.graph-node-circle")
+      .attr("r",      d => 8 + 12 * ((degree.get(d.id) || 0) / maxDeg))
+      .attr("fill",   d => nodeColor(d))
+      .attr("stroke", d => d3.color(nodeColor(d)).brighter(0.8))
+      .on("mouseover", (event, d) => {
+        const r = 8 + 12 * ((degree.get(d.id) || 0) / maxDeg);
+        const links = edgesArr.filter(e => e.a === d.id || e.b === d.id).length;
+        showGraphTooltip(event,
+          `${d.name}\n` +
+          (d.is_self ? "This device\n" : (d.node_type != null ? `Type: ${["Client","Repeater","Room","Gateway"][d.node_type] || "Unknown"}\n` : "")) +
+          `Links: ${links}  Strength: ${(degree.get(d.id) || 0).toFixed(1)}`);
+      })
+      .on("mousemove", positionGraphTooltip)
+      .on("mouseout",  hideGraphTooltip);
+
+    nodeMerge.select("text.graph-node-label")
+      .text(d => d.name)
+      .attr("dy", d => -(10 + 12 * ((degree.get(d.id) || 0) / maxDeg)));
+
+    nodeSel.exit().remove();
+
+    // Feed simulation
+    const prevNodeMap = new Map(graphSim.nodes().map(n => [n.id, n]));
+    const simNodes = nodesArr.map(n => {
+      const prev = prevNodeMap.get(n.id);
+      return prev ? Object.assign(prev, n) : n;
+    });
+    graphSim.nodes(simNodes);
+    graphSim.force("link").links(edgesArr.map(e => ({ ...e, source: e.a, target: e.b })));
+    graphSim.alpha(0.3).restart();
+
+    // Update counter
+    const countEl = document.getElementById("graph-node-count");
+    if (countEl) countEl.textContent = `${nodesArr.length} nodes · ${edgesArr.length} links`;
+  }
+
+  function showGraphTooltip(event, text) {
+    if (!_graphTooltip) {
+      _graphTooltip = document.createElement("div");
+      _graphTooltip.className = "graph-tooltip";
+      document.body.appendChild(_graphTooltip);
+    }
+    _graphTooltip.style.display = "block";
+    _graphTooltip.innerHTML = text.split("\n").join("<br>");
+    positionGraphTooltip(event);
+  }
+  function positionGraphTooltip(event) {
+    if (!_graphTooltip) return;
+    const x = Math.min(event.clientX + 12, window.innerWidth  - 220);
+    const y = Math.min(event.clientY + 12, window.innerHeight - 100);
+    _graphTooltip.style.left = x + "px";
+    _graphTooltip.style.top  = y + "px";
+  }
+  function hideGraphTooltip() {
+    if (_graphTooltip) _graphTooltip.style.display = "none";
+  }
+
+  function processGraphSnapshot(data) {
+    for (const n of (data.nodes || [])) graphNodes.set(n.id, n);
+    for (const e of (data.edges || [])) {
+      const key = `${e.a}:${e.b}`;
+      graphEdges.set(key, e);
+    }
+    if (document.getElementById("page-graph").classList.contains("active")) updateGraphViz();
+  }
+
+  document.getElementById("graph-reset-btn").addEventListener("click", () => {
+    if (!graphSim) return;
+    // Unpin all nodes and reheat
+    graphSim.nodes().forEach(n => { n.fx = null; n.fy = null; });
+    graphSim.alpha(1).restart();
+  });
+
   // ── Adverts page ─────────────────────────────────────────────────────────
   const advertsScrollEl = document.getElementById("adverts-scroll");
   const advertCards     = new Map(); // advert_id -> DOM card element
@@ -2456,6 +2712,8 @@
         pendingMap.delete(packet.pubkey);
         updatePendingBadge();
         if (document.getElementById("page-pending").classList.contains("active")) renderPending();
+      } else if (packet.type === "graph_snapshot") {
+        processGraphSnapshot(packet);
       } else if (packet.type === "advert_history") {
         advertHistoryData = packet.adverts || [];
         if (document.getElementById("page-adverts").classList.contains("active")) renderAdverts();
