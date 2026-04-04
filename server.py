@@ -2,6 +2,7 @@ import asyncio
 import argparse
 import json
 import logging
+import math
 from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -50,6 +51,15 @@ _active_advert_windows: dict   = {}   # advert_id -> window dict
 advert_history: list           = []   # completed advert summaries (oldest first)
 advert_schedule: dict          = {"enabled": False, "interval_secs": 300, "flood": False}
 _advert_schedule_task          = None
+
+# ── Network link graph ───────────────────────────────────────────────────────
+# Observed RF links built from message relay paths.
+# Key = "hashA:hashB" (lexicographically sorted).
+# "self" is used as the placeholder for our own node.
+LINK_HALF_LIFE = 6 * 3600          # strength halves every 6 hours
+LINK_LAMBDA    = math.log(2) / LINK_HALF_LIFE
+LINK_TS_MAX    = 200                # max timestamps kept per link
+link_graph: dict = {}              # edge_key → link dict
 mc_instance = None
 
 RELAY_WINDOW_SECS = 20      # how long to listen for echoes after sending
@@ -290,11 +300,12 @@ async def meshcore_listener() -> None:
                     "sender_timestamp",
                     int(datetime.now(timezone.utc).timestamp()),
                 )
-                raw_text = payload.get("text", "")
+                raw_text    = payload.get("text", "")
+                sender_hash = payload.get("pubkey_prefix", "")
                 if ": " in raw_text:
                     sender, text = raw_text.split(": ", 1)
                 else:
-                    sender = payload.get("pubkey_prefix", "Unknown")
+                    sender = sender_hash or "Unknown"
                     text   = raw_text
 
                 # Consume the oldest stashed path info (FIFO, matches RX_LOG_DATA order)
@@ -308,6 +319,21 @@ async def meshcore_listener() -> None:
                         h = path_str[i:i + chars_per_hop]
                         c = find_contact(h)
                         path_nodes.append({"hash": h, "name": c.get("name")})
+
+                # Record RF links from the observed path into the network graph.
+                # Chain: sender_hash → path[0] → path[1] → … → path[-1] → "self"
+                chain = (
+                    ([sender_hash] if sender_hash else [])
+                    + [n["hash"] for n in path_nodes]
+                    + ["self"]
+                )
+                graph_updated = False
+                for i in range(len(chain) - 1):
+                    if chain[i] and chain[i + 1]:
+                        record_link(chain[i], chain[i + 1])
+                        graph_updated = True
+                if graph_updated:
+                    await broadcast(serialize_graph())
 
                 msg = {
                     "id": next(msg_id_counter),
@@ -589,6 +615,60 @@ async def handle_set_smart_add(packet: dict) -> None:
     save_smart_add_config()
     logger.info(f"Smart-add config updated: {smart_add_config}")
     await broadcast({"type": "smart_add_config", "config": dict(smart_add_config)})
+
+
+def _link_strength(timestamps) -> float:
+    now = int(datetime.now(timezone.utc).timestamp())
+    return sum(math.exp(-LINK_LAMBDA * max(0, now - t)) for t in timestamps)
+
+
+def record_link(a: str, b: str) -> None:
+    """Record one observation of the RF link between nodes a and b."""
+    key = f"{min(a, b)}:{max(a, b)}"
+    now = int(datetime.now(timezone.utc).timestamp())
+    if key not in link_graph:
+        link_graph[key] = {
+            "a": a, "b": b,
+            "count": 0,
+            "last_seen": 0,
+            "timestamps": deque(maxlen=LINK_TS_MAX),
+        }
+    lnk = link_graph[key]
+    lnk["count"]    += 1
+    lnk["last_seen"] = now
+    lnk["timestamps"].append(now)
+
+
+def _node_info(h: str) -> dict:
+    c = find_contact(h) if h != "self" else {}
+    return {
+        "id":        h,
+        "name":      c.get("name") or (h[:8] if h != "self" else "You"),
+        "node_type": c.get("node_type"),
+        "is_self":   h == "self",
+    }
+
+
+def serialize_graph() -> dict:
+    nodes = {}
+    edges = []
+    for lnk in link_graph.values():
+        strength = round(_link_strength(lnk["timestamps"]), 4)
+        for h in (lnk["a"], lnk["b"]):
+            if h not in nodes:
+                nodes[h] = _node_info(h)
+        edges.append({
+            "a":         lnk["a"],
+            "b":         lnk["b"],
+            "count":     lnk["count"],
+            "strength":  strength,
+            "last_seen": lnk["last_seen"],
+        })
+    return {
+        "type":  "graph_snapshot",
+        "nodes": list(nodes.values()),
+        "edges": edges,
+    }
 
 
 def serialize_advert(win: dict) -> dict:
@@ -971,6 +1051,10 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 "type": "neighbors_snapshot",
                 "neighbors": [serialize_neighbor(n) for n in neighbors.values()],
             }))
+
+        # Network graph snapshot
+        if link_graph:
+            await websocket.send_text(json.dumps(serialize_graph()))
 
         while True:
             data = await websocket.receive_text()
