@@ -2313,39 +2313,17 @@
       attribution: "© OpenStreetMap contributors",
       maxZoom: 19,
     }).addTo(_leafletMap);
-    // Whenever the map moves/zooms, repin geo-nodes and reheat
-    _leafletMap.on("move zoom", () => {
-      if (_mapMode) _repinGeoNodes(false);
-    });
-    _leafletMap.on("moveend zoomend", () => {
-      if (_mapMode) _repinGeoNodes(true);
+    // On every map move/zoom, re-render node positions immediately (no simulation lag)
+    _leafletMap.on("move zoom moveend zoomend", () => {
+      if (_mapMode) renderGraphPositions();
     });
   }
 
-  // Convert lat/lon → SVG pixel coords via Leaflet
+  // Convert lat/lon → pixel coords in the SVG/container space via Leaflet
   function _latLonToSvgPx(lat, lon) {
     if (!_leafletMap) return null;
-    const containerPt = _leafletMap.latLngToContainerPoint([lat, lon]);
-    return { x: containerPt.x, y: containerPt.y };
-  }
-
-  // Set fx/fy on geo-nodes; clear them on floating nodes
-  function _repinGeoNodes(reheat) {
-    let anyGeo = false;
-    for (const n of _gSimNodes) {
-      if (n.lat != null && n.lon != null) {
-        const px = _latLonToSvgPx(n.lat, n.lon);
-        if (px) { n.fx = px.x; n.fy = px.y; anyGeo = true; }
-      } else {
-        // floating node — clear any geo pin but keep manual drag pins
-        if (n._geoPinned) { n.fx = null; n.fy = null; n._geoPinned = false; }
-      }
-    }
-    // Mark which nodes are geo-pinned so we can release them on mode exit
-    for (const n of _gSimNodes) {
-      if (n.lat != null && n.lon != null) n._geoPinned = true;
-    }
-    if (reheat && graphSim) graphSim.alpha(0.3).restart();
+    const pt = _leafletMap.latLngToContainerPoint([lat, lon]);
+    return { x: pt.x, y: pt.y };
   }
 
   // ── SVG init ────────────────────────────────────────────────────────────
@@ -2358,7 +2336,6 @@
     const svg = d3.select("#graph-svg");
     svg.selectAll("*").remove();
 
-    // D3 zoom only active in force mode
     const zoom = d3.zoom().scaleExtent([0.05, 10]).on("zoom", (e) => {
       if (!_mapMode) graphG.attr("transform", e.transform);
     });
@@ -2383,15 +2360,23 @@
     updateGraphViz();
   }
 
-  // ── Tick — uses stored selections, never re-queries DOM ─────────────────
-  function graphTick() {
+  // ── Render positions — called from tick AND directly from Leaflet events ─
+  function renderGraphPositions() {
     if (!_gLinkSel || !_gNodeSel) return;
+    _gNodeSel.attr("transform", d => {
+      // In map mode: geo-nodes that haven't been freed track the map projection
+      if (_mapMode && d.lat != null && d.lon != null && !d._geoFreed) {
+        const px = _latLonToSvgPx(d.lat, d.lon);
+        if (px) { d.x = px.x; d.y = px.y; d.fx = px.x; d.fy = px.y; }
+      }
+      return `translate(${d.x ?? 0},${d.y ?? 0})`;
+    });
     _gLinkSel
       .attr("x1", d => d.source.x ?? 0).attr("y1", d => d.source.y ?? 0)
       .attr("x2", d => d.target.x ?? 0).attr("y2", d => d.target.y ?? 0);
-    _gNodeSel
-      .attr("transform", d => `translate(${d.x ?? 0},${d.y ?? 0})`);
   }
+
+  function graphTick() { renderGraphPositions(); }
 
   let _graphTooltip = null;
 
@@ -2467,15 +2452,18 @@
           d.fx = d.x; d.fy = d.y;
         })
         .on("drag", (event, d) => {
-          if (_mapMode) {
-            // In map mode dragging geo-nodes is not useful; let Leaflet pan instead
-            if (d._geoPinned) return;
-          }
           d.fx = event.x; d.fy = event.y;
+          // Dragging a geo-node frees it from its geographic pin
+          if (d.lat != null && d.lon != null) d._geoFreed = true;
         })
         .on("end", (event, d) => {
           if (!event.active) graphSim.alphaTarget(0);
-          if (!d._geoPinned) { d.fx = null; d.fy = null; }
+          // In force mode: release floating nodes so forces continue to act
+          // In map mode: keep fx/fy so node stays where dropped
+          // Geo-freed nodes always stay where dropped (both modes)
+          if (!_mapMode && d.lat == null && d.lon == null) {
+            d.fx = null; d.fy = null;
+          }
         })
       );
 
@@ -2526,8 +2514,8 @@
     graphSim.force("link").links(edgesArr); // edgesArr objects already have source/target set
     graphSim.alpha(0.6).restart();
 
-    // Repin geo nodes if in map mode
-    if (_mapMode) _repinGeoNodes(false);
+    // In map mode: pin geo-nodes to their current map projection
+    if (_mapMode) _pinAllGeoNodes();
 
     const countEl = document.getElementById("graph-node-count");
     if (countEl) countEl.textContent = `${nodesArr.length} nodes · ${edgesArr.length} links`;
@@ -2536,40 +2524,62 @@
   // ── Map/force toggle ─────────────────────────────────────────────────────
   function setGraphMapMode(on) {
     _mapMode = on;
-    const mapEl  = document.getElementById("graph-map");
-    const svgEl  = document.getElementById("graph-svg");
-    const btn    = document.getElementById("graph-map-toggle-btn");
+    const mapEl    = document.getElementById("graph-map");
+    const svgEl    = document.getElementById("graph-svg");
+    const btn      = document.getElementById("graph-map-toggle-btn");
     const resetBtn = document.getElementById("graph-reset-btn");
 
     if (on) {
       mapEl.classList.remove("hidden");
       svgEl.classList.add("map-mode");
-      // SVG must not capture mouse so Leaflet can pan
       if (btn) btn.textContent = "Force layout";
-      if (resetBtn) resetBtn.style.display = "none";
-      // Auto-fit map to nodes with location
-      _fitMapToGeoNodes();
-      _repinGeoNodes(true);
-      // Remove D3 zoom from SVG so Leaflet handles it
+      if (resetBtn) resetBtn.textContent = "Re-pin locations";
+      // Disable D3 zoom — Leaflet handles pan/zoom in map mode
       d3.select("#graph-svg").on(".zoom", null);
-      // Reset the SVG transform — Leaflet handles the pan viewport
+      // Remove any transform on the root <g> — SVG coords = Leaflet container coords
       graphG.attr("transform", null);
+      // Auto-fit to nodes that have a location, then pin them
+      _fitMapToGeoNodes();
+      // Small delay so Leaflet finishes fitting before we read container points
+      setTimeout(() => { _pinAllGeoNodes(); renderGraphPositions(); graphSim.alpha(0.3).restart(); }, 50);
     } else {
       mapEl.classList.add("hidden");
       svgEl.classList.remove("map-mode");
       if (btn) btn.textContent = "Map view";
-      if (resetBtn) resetBtn.style.display = "";
+      if (resetBtn) resetBtn.textContent = "Reset layout";
       // Re-enable D3 zoom
       if (svgEl.__d3zoom) d3.select("#graph-svg").call(svgEl.__d3zoom);
-      // Release geo pins so force layout can arrange freely
+      // Release geo-pins so force layout can freely arrange
       for (const n of _gSimNodes) {
-        if (n._geoPinned) { n.fx = null; n.fy = null; n._geoPinned = false; }
+        n._geoFreed = false;
+        if (n.lat != null && n.lon != null) { n.fx = null; n.fy = null; }
       }
-      // Re-center force layout
       const { W, H } = graphContainerDims();
       graphSim.force("center", d3.forceCenter(W / 2, H / 2));
       graphSim.alpha(0.8).restart();
     }
+  }
+
+  // Pin all geo-nodes to their current map projection (respects _geoFreed)
+  function _pinAllGeoNodes() {
+    for (const n of _gSimNodes) {
+      if (n.lat != null && n.lon != null && !n._geoFreed) {
+        const px = _latLonToSvgPx(n.lat, n.lon);
+        if (px) { n.fx = px.x; n.fy = px.y; n.x = px.x; n.y = px.y; }
+      }
+    }
+  }
+
+  // Re-pin all geo-nodes (clear freed state) — called by reset button in map mode
+  function _resetGeoNodes() {
+    for (const n of _gSimNodes) {
+      if (n.lat != null && n.lon != null) {
+        n._geoFreed = false;
+        const px = _latLonToSvgPx(n.lat, n.lon);
+        if (px) { n.fx = px.x; n.fy = px.y; n.x = px.x; n.y = px.y; }
+      }
+    }
+    renderGraphPositions();
   }
 
   function _fitMapToGeoNodes() {
@@ -2618,8 +2628,14 @@
 
   document.getElementById("graph-reset-btn").addEventListener("click", () => {
     if (!graphSim) return;
-    graphSim.nodes().forEach(n => { if (!n._geoPinned) { n.fx = null; n.fy = null; } });
-    graphSim.alpha(1).restart();
+    if (_mapMode) {
+      // Re-pin all geo-nodes to their geographic coordinates
+      _resetGeoNodes();
+    } else {
+      // Free all manually-dragged nodes and reheat
+      graphSim.nodes().forEach(n => { n.fx = null; n.fy = null; });
+      graphSim.alpha(1).restart();
+    }
   });
 
   // ── Adverts page ─────────────────────────────────────────────────────────
