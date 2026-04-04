@@ -508,13 +508,18 @@
       z-index: 999; pointer-events: none; box-shadow: 0 4px 16px rgba(0,0,0,0.5);
       max-width: 200px; line-height: 1.6;
     }
-    /* ── Path pulse animation ── */
-    .path-dot { pointer-events: none; }
-    @keyframes linkFlash {
-      0%   { stroke: #ffe066; filter: drop-shadow(0 0 4px #ffe066); stroke-width: 5; }
-      100% { stroke: inherit; filter: none; stroke-width: inherit; }
+    /* ── Route highlight: persistent flowing dash on active message path ── */
+    @keyframes routeFlow {
+      to { stroke-dashoffset: -24; }
     }
-    .graph-link.link-active { animation: linkFlash 0.9s ease-out forwards; }
+    .graph-link.link-route {
+      stroke: #ff9a3c !important;
+      stroke-width: 4 !important;
+      stroke-opacity: 1 !important;
+      stroke-dasharray: 10 6;
+      animation: routeFlow 0.7s linear infinite;
+      filter: drop-shadow(0 0 5px rgba(255,154,60,0.65));
+    }
     /* ── New node animations ── */
     @keyframes nodeAppear {
       0%   { opacity: 0; r: 0; }
@@ -1119,6 +1124,11 @@
     </div>
     <span class="mgmt-spacer"></span>
     <span id="graph-node-count" style="color:var(--text-muted);font-size:11px"></span>
+    <select id="graph-tile-select" class="mgmt-btn" style="display:none;padding-right:6px">
+      <option value="dark">Dark</option>
+      <option value="minimal">Minimal</option>
+      <option value="standard">Standard</option>
+    </select>
     <button class="mgmt-btn" id="graph-map-toggle-btn">Map view</button>
     <button class="mgmt-btn" id="graph-reset-btn">Reset layout</button>
   </div>
@@ -1570,11 +1580,10 @@
     // Update btn badge indicator: show total unread across non-selected channels
     updateBtnBadge();
 
-    // Graph path animation + toast (always — graph tracks all channels)
+    // Graph route highlight + toast (always — graph tracks all channels)
     if (graphInited) {
       const pathHashes = (msg.path || []).map(h => (typeof h === "object" ? h.hash : h));
-      animateMessagePath(msg.sender_hash || "", pathHashes);
-      // Show toast if graph page is open OR any time (shows overlay on graph page)
+      highlightMessageRoute(msg.sender_hash || "", pathHashes);
       if (_graphPageOpen) showGraphToast(msg.sender, msg.text, msg.hops || 0);
     }
   }
@@ -2359,56 +2368,60 @@
     el.onclick = () => { el.classList.remove("visible"); clearTimeout(_toastTimer); };
   }
 
-  // ── Path animation ───────────────────────────────────────────────────────
-  // Spawn a dot that travels from pixel (x1,y1) to (x2,y2) after `delay` ms
-  function _spawnDot(x1, y1, x2, y2, delay) {
-    if (!graphG) return;
-    const dot = graphG.select(".links").append("circle")
-      .attr("class", "path-dot")
-      .attr("r", 5).attr("fill", "#ffe066").attr("opacity", 0.9)
-      .attr("cx", x1).attr("cy", y1);
-    setTimeout(() => {
-      dot.transition().duration(650).ease(d3.easeLinear)
-        .attr("cx", x2).attr("cy", y2).attr("opacity", 0)
-        .on("end", () => dot.remove());
-    }, delay);
+  // ── Route highlight ──────────────────────────────────────────────────────
+  // The last message's path is kept highlighted (flowing orange dashes) until
+  // a new message replaces it.  No time limit — the user sees the active route.
+  let _routeLinkKeys = new Set(); // edge keys currently highlighted
+
+  function clearRouteHighlight() {
+    if (_gLinkSel) _gLinkSel.classed("link-route", false);
+    _routeLinkKeys.clear();
   }
 
-  function animateMessagePath(senderHash, pathHops) {
-    // Build full chain of node IDs: sender → hops → self
+  function highlightMessageRoute(senderHash, pathHops) {
+    // Build full chain: sender → hop[0] → … → self
     const chain = [];
     if (senderHash) chain.push(senderHash);
     for (const h of pathHops) { if (h) chain.push(h); }
     chain.push("self");
-    if (chain.length < 2 || !graphG) return;
+    if (chain.length < 2 || !_gLinkSel) return;
 
-    // For each consecutive pair, find the edge and animate
-    const nodeById = new Map(_gSimNodes.map(n => [n.id, n]));
-    const delay = 0;
+    clearRouteHighlight();
+
+    // Mark every link in the chain
     for (let i = 0; i < chain.length - 1; i++) {
-      const srcId = chain[i];
-      const dstId = chain[i + 1];
-      const src = nodeById.get(srcId);
-      const dst = nodeById.get(dstId);
-      if (!src || !dst || src.x == null || dst.x == null) continue;
-
-      const hopDelay = i * 200;
-
-      // Flash the link
-      const a = srcId < dstId ? srcId : dstId;
-      const b = srcId < dstId ? dstId : srcId;
-      if (_gLinkSel) {
-        _gLinkSel.filter(d => d.a === a && d.b === b)
-          .classed("link-active", false) // reset to re-trigger animation
-          .each(function() { void this.offsetWidth; }) // force reflow
-          .classed("link-active", true);
-        setTimeout(() => {
-          if (_gLinkSel) _gLinkSel.filter(d => d.a === a && d.b === b).classed("link-active", false);
-        }, hopDelay + 950);
-      }
-
-      _spawnDot(src.x, src.y, dst.x, dst.y, hopDelay);
+      const a = chain[i] < chain[i+1] ? chain[i] : chain[i+1];
+      const b = chain[i] < chain[i+1] ? chain[i+1] : chain[i];
+      _routeLinkKeys.add(`${a}:${b}`);
     }
+
+    _gLinkSel.classed("link-route", d => _routeLinkKeys.has(`${d.a}:${d.b}`));
+  }
+
+  // ── Map tile switcher ────────────────────────────────────────────────────
+  let _tileLayer = null;
+  const TILE_LAYERS = {
+    dark: {
+      url:  "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
+      attr: "© OpenStreetMap contributors © CARTO",
+    },
+    minimal: {
+      url:  "https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png",
+      attr: "© OpenStreetMap contributors © CARTO",
+    },
+    standard: {
+      url:  "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+      attr: "© OpenStreetMap contributors",
+    },
+  };
+
+  function setMapTileStyle(key) {
+    if (!_leafletMap) return;
+    const cfg = TILE_LAYERS[key] || TILE_LAYERS.dark;
+    if (_tileLayer) _leafletMap.removeLayer(_tileLayer);
+    _tileLayer = L.tileLayer(cfg.url, { attribution: cfg.attr, maxZoom: 19 });
+    _tileLayer.addTo(_leafletMap);
+    localStorage.setItem("graphTileStyle", key);
   }
 
   // Force-mode state
@@ -2471,9 +2484,11 @@
     if (_leafletMap || !window.L) return;
     _leafletMap = L.map("graph-map", { zoomControl: true, attributionControl: true })
       .setView([51.5, -0.09], 10);
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      attribution: "© OpenStreetMap contributors", maxZoom: 19,
-    }).addTo(_leafletMap);
+    // Restore saved tile style (default: dark to match the UI colour scheme)
+    const savedTile = localStorage.getItem("graphTileStyle") || "dark";
+    const tileSelect = document.getElementById("graph-tile-select");
+    if (tileSelect) tileSelect.value = savedTile;
+    setMapTileStyle(savedTile);
     // During pan/zoom animations Leaflet moves tiles via CSS transform but our
     // SVG is a separate absolutely-positioned element — it doesn't move with the
     // tiles unless we reproject every animation frame.  The RAF loop in
@@ -2638,6 +2653,9 @@
           `Observations: ${d.count}\nStrength: ${d.strength.toFixed(2)}\nLast seen: ${fmtAgo(d.last_seen)}`));
     linkUpd.exit().remove();
     _gLinkSel = graphG.select(".links").selectAll("line.graph-link");
+    // Restore route highlight after rebind
+    if (_routeLinkKeys && _routeLinkKeys.size)
+      _gLinkSel.classed("link-route", d => _routeLinkKeys.has(`${d.a}:${d.b}`));
 
     // ── Nodes — carry sim position across data refreshes ─────────────────
     const prevMap = new Map(_gSimNodes.map(n => [n.id, n]));
@@ -2774,6 +2792,8 @@
       svgEl.classList.add("map-mode");
       if (btn) btn.textContent = "Force layout";
       if (resetBtn) resetBtn.textContent = "Reset positions";
+      const tileSelect = document.getElementById("graph-tile-select");
+      if (tileSelect) tileSelect.style.display = "";
 
       // Stop simulation — map mode doesn't need it
       graphSim.stop();
@@ -2812,6 +2832,8 @@
       svgEl.classList.remove("map-mode");
       if (btn) btn.textContent = "Map view";
       if (resetBtn) resetBtn.textContent = "Reset layout";
+      const tileSelect2 = document.getElementById("graph-tile-select");
+      if (tileSelect2) tileSelect2.style.display = "none";
       if (svgEl.__d3zoom) d3.select("#graph-svg").call(svgEl.__d3zoom);
 
       const { W, H } = graphContainerDims();
@@ -2856,6 +2878,10 @@
 
   // ── Toolbar buttons ───────────────────────────────────────────────────────
   document.getElementById("graph-map-toggle-btn").addEventListener("click", () => setGraphMapMode(!_mapMode));
+
+  document.getElementById("graph-tile-select").addEventListener("change", function() {
+    setMapTileStyle(this.value);
+  });
 
   document.getElementById("graph-reset-btn").addEventListener("click", () => {
     if (_mapMode) {
