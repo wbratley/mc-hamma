@@ -2063,70 +2063,65 @@
     const el = document.getElementById("rankings-content");
     if (!el) return;
 
-    // ── Build path counts: how many messages each hash appears in ─────────────
-    const pathCounts = new Map(); // hash → { name, count }
-    for (const [, ch] of channels) {
-      for (const msg of ch.messages) {
-        if (!msg.path) continue;
-        // Include relay hops in the path
-        for (const node of msg.path) {
-          const h = (typeof node === "object") ? node.hash : node;
-          const name = (typeof node === "object" && node.name) ? node.name : null;
-          if (!h) continue;
-          if (!pathCounts.has(h)) pathCounts.set(h, { hash: h, name: name || h.slice(0, 8), count: 0 });
-          const rec = pathCounts.get(h);
-          rec.count++;
-          if (name && rec.name === h.slice(0, 8)) rec.name = name; // prefer named over hash
-        }
-      }
+    if (graphEdges.size === 0) {
+      el.innerHTML = '<p id="rankings-empty" style="color:var(--text-muted);font-size:14px;text-align:center;margin-top:40px">No path data yet — rankings appear once messages are received.</p>';
+      return;
     }
 
-    // Filter to repeaters only (node_type === 1) where possible, fall back to all
-    const isRepeater = (hash) => {
-      const gn = graphNodes.get(hash);
-      if (gn && gn.node_type != null) return gn.node_type === 1;
-      // check contacts map by prefix
-      for (const [k, c] of contactsMap) {
-        if (hash.startsWith(k) || k.startsWith(hash)) return c.node_type === 1;
-      }
-      return true; // unknown — include it
-    };
-
-    const topPaths = [...pathCounts.values()]
-      .filter(r => isRepeater(r.hash))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 10);
-
-    // ── Build link rankings from graphEdges ───────────────────────────────────
+    // All rankings derive from graphEdges so they match the graph exactly.
+    // Each edge has: { a, b, count (total path observations), strength, last_seen }
     const now6h = Date.now() / 1000 - 6 * 3600;
-    const linkCount = new Map(); // hash → { name, links: 0, maxStrength: 0 }
+
+    // Per-node aggregates
+    const nodeAgg = new Map(); // hash → { hash, name, totalObs, links, totalStrength, recentObs, recentLinks }
     for (const e of graphEdges.values()) {
       for (const h of [e.a, e.b]) {
         if (h === "self") continue;
-        if (!linkCount.has(h)) {
+        if (!nodeAgg.has(h)) {
           const gn = graphNodes.get(h);
-          linkCount.set(h, { hash: h, name: (gn && gn.name) || h.slice(0, 8), links: 0, maxStrength: 0, recentLinks: 0 });
+          nodeAgg.set(h, {
+            hash: h,
+            name: (gn && gn.name) || h.slice(0, 8),
+            node_type: gn ? gn.node_type : null,
+            totalObs: 0,   // sum of edge counts (total path observations)
+            links: 0,      // number of distinct edges
+            totalStrength: 0,
+            recentObs: 0,  // count of edges active in last 6h
+            recentLinks: 0,
+          });
         }
-        const rec = linkCount.get(h);
-        rec.links++;
-        if (e.strength > rec.maxStrength) rec.maxStrength = e.strength;
+        const rec = nodeAgg.get(h);
+        rec.totalObs      += e.count;
+        rec.links         += 1;
+        rec.totalStrength += e.strength;
         if (e.last_seen >= now6h) rec.recentLinks++;
+        // Edge count weighted by recency — approximate recent observations
+        // by scaling count proportionally to strength vs baseline (1 obs = strength≈1)
+        rec.recentObs += e.last_seen >= now6h ? e.count : 0;
       }
     }
 
-    const topLinked = [...linkCount.values()]
-      .filter(r => isRepeater(r.hash))
-      .sort((a, b) => b.links - a.links || b.maxStrength - a.maxStrength)
-      .slice(0, 10);
+    // Exclude confirmed non-relaying clients (node_type 0).
+    // Include repeaters (1), room-servers (2), gateways (3), and unknowns (null).
+    const aggArr = [...nodeAgg.values()].filter(r => r.node_type !== 0);
 
-    const topStrength = [...linkCount.values()]
-      .filter(r => isRepeater(r.hash))
-      .sort((a, b) => b.maxStrength - a.maxStrength)
-      .slice(0, 10);
-
-    if (topPaths.length === 0 && topLinked.length === 0) {
-      el.innerHTML = '<p id="rankings-empty" style="color:var(--text-muted);font-size:14px;text-align:center;margin-top:40px">No path data yet — rankings appear once messages are received.</p>';
+    if (aggArr.length === 0) {
+      el.innerHTML = '<p id="rankings-empty" style="color:var(--text-muted);font-size:14px;text-align:center;margin-top:40px">No repeater/relay data yet.</p>';
       return;
+    }
+
+    // Top 10 by total path observations (sum of edge counts)
+    const topObs = [...aggArr].sort((a, b) => b.totalObs - a.totalObs).slice(0, 10);
+    // Top 10 by link count
+    const topLinks = [...aggArr].sort((a, b) => b.links - a.links || b.totalStrength - a.totalStrength).slice(0, 10);
+    // Top 10 by strength (sum across all edges — reflects how active links are in last 6h)
+    const topStrength = [...aggArr].sort((a, b) => b.totalStrength - a.totalStrength).slice(0, 10);
+
+    function typeBadge(nt) {
+      if (nt === 1) return '';
+      if (nt === 2) return ' <span style="font-size:10px;color:var(--text-muted)">[Room]</span>';
+      if (nt === 3) return ' <span style="font-size:10px;color:var(--text-muted)">[GW]</span>';
+      return '';
     }
 
     function mapBtn(hash) {
@@ -2146,38 +2141,36 @@
 
     const sections = [];
 
-    // Top 10 by path appearances
     sections.push(`<div>
-      <div class="rank-section-title">Top repeaters by path appearances</div>
-      ${buildTable(topPaths, [
-        { label: "#",        cls: "rank-num",   fn: (r, i) => i + 1 },
-        { label: "Repeater", cls: "rank-name",  fn: r => r.name },
-        { label: "Messages in path", cls: "rank-count", fn: r => r.count },
-        { label: "",         cls: "",           fn: r => mapBtn(r.hash) },
+      <div class="rank-section-title">Top relays by path observations</div>
+      ${buildTable(topObs, [
+        { label: "#",           cls: "rank-num",   fn: (r, i) => i + 1 },
+        { label: "Node",        cls: "rank-name",  fn: r => r.name + typeBadge(r.node_type) },
+        { label: "Total obs",   cls: "rank-count", fn: r => r.totalObs },
+        { label: "Links",       cls: "rank-strength", fn: r => r.links },
+        { label: "",            cls: "",           fn: r => mapBtn(r.hash) },
       ])}
     </div>`);
 
-    // Top 10 by link count
     sections.push(`<div>
-      <div class="rank-section-title">Top repeaters by link count</div>
-      ${buildTable(topLinked, [
-        { label: "#",        cls: "rank-num",   fn: (r, i) => i + 1 },
-        { label: "Repeater", cls: "rank-name",  fn: r => r.name },
-        { label: "Links",    cls: "rank-count", fn: r => r.links },
+      <div class="rank-section-title">Top relays by link count</div>
+      ${buildTable(topLinks, [
+        { label: "#",           cls: "rank-num",   fn: (r, i) => i + 1 },
+        { label: "Node",        cls: "rank-name",  fn: r => r.name + typeBadge(r.node_type) },
+        { label: "Links",       cls: "rank-count", fn: r => r.links },
         { label: "Active (6h)", cls: "rank-strength", fn: r => r.recentLinks },
-        { label: "",         cls: "",           fn: r => mapBtn(r.hash) },
+        { label: "",            cls: "",           fn: r => mapBtn(r.hash) },
       ])}
     </div>`);
 
-    // Top 10 by strongest link
     sections.push(`<div>
-      <div class="rank-section-title">Strongest repeaters (path observations, last 6 h)</div>
+      <div class="rank-section-title">Strongest relays (link strength, last 6 h weighted)</div>
       ${buildTable(topStrength, [
-        { label: "#",        cls: "rank-num",   fn: (r, i) => i + 1 },
-        { label: "Repeater", cls: "rank-name",  fn: r => r.name },
-        { label: "Peak strength", cls: "rank-count", fn: r => r.maxStrength.toFixed(2) },
-        { label: "Links",    cls: "rank-strength", fn: r => r.links },
-        { label: "",         cls: "",           fn: r => mapBtn(r.hash) },
+        { label: "#",           cls: "rank-num",   fn: (r, i) => i + 1 },
+        { label: "Node",        cls: "rank-name",  fn: r => r.name + typeBadge(r.node_type) },
+        { label: "Strength",    cls: "rank-count", fn: r => r.totalStrength.toFixed(2) },
+        { label: "Total obs",   cls: "rank-strength", fn: r => r.totalObs },
+        { label: "",            cls: "",           fn: r => mapBtn(r.hash) },
       ])}
     </div>`);
 
