@@ -763,6 +763,53 @@
     .hop-popup .pop-node-name { color: var(--text); }
     .hop-popup .pop-node-hash { color: var(--text-secondary); font-family: monospace; }
 
+    /* ── Node edit popup ── */
+    .node-edit-popup {
+      position: fixed; z-index: 1000;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 14px 16px;
+      box-shadow: 0 6px 24px rgba(0,0,0,0.55);
+      min-width: 220px; font-size: 12px;
+    }
+    .node-edit-popup .nep-title {
+      font-weight: 700; font-size: 13px; color: var(--accent);
+      margin-bottom: 10px;
+    }
+    .node-edit-popup label {
+      display: block; color: var(--text-muted); font-size: 10px;
+      text-transform: uppercase; letter-spacing: 0.05em; margin-top: 8px; margin-bottom: 2px;
+    }
+    .node-edit-popup input {
+      width: 100%; background: var(--surface2); border: 1px solid var(--border);
+      color: var(--text); border-radius: 5px; padding: 5px 8px;
+      font-size: 12px; outline: none;
+    }
+    .node-edit-popup input:focus { border-color: var(--accent); }
+    .node-edit-popup input[placeholder]::placeholder { color: var(--text-muted); }
+    .node-edit-popup .nep-row {
+      display: flex; gap: 6px; margin-top: 6px;
+    }
+    .node-edit-popup .nep-row input { flex: 1; min-width: 0; }
+    .node-edit-popup .nep-actions {
+      display: flex; gap: 6px; margin-top: 12px; justify-content: flex-end;
+    }
+    .node-edit-popup .nep-btn {
+      font-size: 12px; padding: 4px 12px; border-radius: 6px;
+      border: 1px solid var(--border); background: var(--surface2);
+      color: var(--text); cursor: pointer;
+    }
+    .node-edit-popup .nep-btn.primary {
+      background: var(--accent-dim); border-color: var(--accent); color: var(--accent);
+    }
+    .node-edit-popup .nep-btn.primary:hover { background: var(--accent); color: #fff; }
+    .node-edit-popup .nep-btn.danger { color: var(--status-err); }
+    .node-edit-popup .nep-btn.danger:hover { border-color: var(--status-err); }
+    .node-edit-popup .nep-hint {
+      font-size: 10px; color: var(--text-muted); margin-top: 6px; line-height: 1.4;
+    }
+    /* small asterisk on node labels that have custom data */
+    .gnode.has-custom > text.graph-node-label { font-style: italic; }
+
     .sender {
       font-size: 12px;
       font-weight: 600;
@@ -2572,20 +2619,28 @@
       lat = msg.sender_lat; lon = msg.sender_lon; exact = true;
     }
 
-    // 2) Exact location from graph node record
+    // 2) Exact location from graph node record or custom data
     if (lat == null) {
       const node = graphNodes.get(senderHash);
       if (node?.lat != null && node?.lon != null) {
         lat = node.lat; lon = node.lon; exact = true;
+      } else {
+        const custom = _customNodeData[senderHash];
+        if (custom?.lat != null && custom?.lon != null) {
+          lat = custom.lat; lon = custom.lon; exact = true;
+        }
       }
     }
 
-    // 3) Estimated: use first hop's known location
+    // 3) Estimated: use first hop's known location (or custom)
     if (lat == null && pathHashes.length > 0) {
       for (const h of pathHashes) {
         const hop = graphNodes.get(h);
-        if (hop?.lat != null && hop?.lon != null) {
-          lat = hop.lat; lon = hop.lon; exact = false;
+        const hopCustom = _customNodeData[h];
+        const hLat = hop?.lat ?? hopCustom?.lat;
+        const hLon = hop?.lon ?? hopCustom?.lon;
+        if (hLat != null && hLon != null) {
+          lat = hLat; lon = hLon; exact = false;
           break;
         }
       }
@@ -2630,6 +2685,165 @@
       showGraphInfo(msg);
       markGraphNodesRead();
     }));
+  }
+
+  // ── Custom node overrides (persisted to localStorage) ────────────────────
+  // Stores user-set name / lat / lon per node hash.
+  // Server advert data takes precedence when available — custom is the fallback.
+  let _customNodeData = {}; // { nodeId: { name?, lat?, lon? } }
+
+  function _loadCustomNodeData() {
+    try { _customNodeData = JSON.parse(localStorage.getItem("customNodeData") || "{}"); }
+    catch { _customNodeData = {}; }
+  }
+  function _saveCustomNodeData() {
+    try { localStorage.setItem("customNodeData", JSON.stringify(_customNodeData)); } catch {}
+  }
+  function setCustomNode(id, fields) {
+    if (!_customNodeData[id]) _customNodeData[id] = {};
+    Object.assign(_customNodeData[id], fields);
+    // Remove keys explicitly set to null/undefined
+    for (const k of Object.keys(_customNodeData[id])) {
+      if (_customNodeData[id][k] == null) delete _customNodeData[id][k];
+    }
+    if (!Object.keys(_customNodeData[id]).length) delete _customNodeData[id];
+    _saveCustomNodeData();
+  }
+  function clearCustomNode(id) {
+    delete _customNodeData[id];
+    _saveCustomNodeData();
+  }
+
+  // Effective display name: server name if it's a real contact name (not just
+  // the 8-char hash prefix), otherwise fall back to user-set custom name.
+  function effectiveName(node) {
+    const serverIsReal = node.name && node.name !== (node.id || "").slice(0, 8);
+    if (serverIsReal) return node.name;
+    const custom = _customNodeData[node.id];
+    return (custom?.name) || node.name;
+  }
+
+  // Whether a node has any user-defined custom data
+  function hasCustomData(node) {
+    return !!_customNodeData[node.id];
+  }
+
+  _loadCustomNodeData();
+
+  // ── Node edit popup ───────────────────────────────────────────────────────
+  let _nodeEditPopup = null;
+
+  function dismissNodeEditPopup() {
+    if (_nodeEditPopup) { _nodeEditPopup.remove(); _nodeEditPopup = null; }
+  }
+
+  function showNodeEditPopup(event, d) {
+    event.stopPropagation();
+    event.preventDefault();
+    dismissNodeEditPopup();
+    dismissHopPopup();
+
+    const custom = _customNodeData[d.id] || {};
+    const curName = effectiveName(d);
+    const curLat  = custom.lat ?? (d._mapVirtualLatLon?.[0] ?? d.lat ?? "");
+    const curLon  = custom.lon ?? (d._mapVirtualLatLon?.[1] ?? d.lon ?? "");
+
+    const pop = document.createElement("div");
+    pop.className = "node-edit-popup";
+
+    const title = document.createElement("div");
+    title.className = "nep-title";
+    title.textContent = `Edit: ${curName}`;
+    pop.appendChild(title);
+
+    const mkField = (labelText, id, val, ph) => {
+      const lbl = document.createElement("label");
+      lbl.textContent = labelText;
+      lbl.setAttribute("for", id);
+      const inp = document.createElement("input");
+      inp.id = id; inp.value = val !== "" ? val : ""; inp.placeholder = ph;
+      pop.appendChild(lbl);
+      pop.appendChild(inp);
+      return inp;
+    };
+
+    const nameInp = mkField("Name", "nep-name", custom.name || "", d.name);
+    const locRow  = document.createElement("div");
+    locRow.className = "nep-row";
+    const latLbl = document.createElement("label"); latLbl.textContent = "Lat";
+    const lonLbl = document.createElement("label"); lonLbl.textContent = "Lon";
+    const latInp = document.createElement("input");
+    const lonInp = document.createElement("input");
+    latInp.placeholder = curLat !== "" ? String(curLat) : "latitude";
+    lonInp.placeholder = curLon !== "" ? String(curLon) : "longitude";
+    latInp.value = custom.lat != null ? custom.lat : "";
+    lonInp.value = custom.lon != null ? custom.lon : "";
+    latInp.type = lonInp.type = "number"; latInp.step = lonInp.step = "any";
+    pop.appendChild(latLbl);
+
+    locRow.appendChild(latInp);
+    locRow.appendChild(lonInp);
+    pop.appendChild(locRow);
+
+    const hint = document.createElement("div");
+    hint.className = "nep-hint";
+    hint.textContent = "Custom name/location used when no advert data is available. Drag the node on the map to set location visually.";
+    pop.appendChild(hint);
+
+    const actions = document.createElement("div");
+    actions.className = "nep-actions";
+
+    const clearBtn = document.createElement("button");
+    clearBtn.className = "nep-btn danger";
+    clearBtn.textContent = "Clear custom";
+    clearBtn.addEventListener("click", () => {
+      clearCustomNode(d.id);
+      dismissNodeEditPopup();
+      if (graphInited) updateGraphViz();
+    });
+
+    const cancelBtn = document.createElement("button");
+    cancelBtn.className = "nep-btn";
+    cancelBtn.textContent = "Cancel";
+    cancelBtn.addEventListener("click", dismissNodeEditPopup);
+
+    const saveBtn = document.createElement("button");
+    saveBtn.className = "nep-btn primary";
+    saveBtn.textContent = "Save";
+    saveBtn.addEventListener("click", () => {
+      const newName = nameInp.value.trim() || null;
+      const newLat  = latInp.value !== "" ? parseFloat(latInp.value) : null;
+      const newLon  = lonInp.value !== "" ? parseFloat(lonInp.value) : null;
+      setCustomNode(d.id, { name: newName, lat: newLat, lon: newLon });
+      // If user set a location, also update the virtual lat/lon so the map
+      // repositions the node immediately without waiting for a drag.
+      if (newLat != null && newLon != null && _mapMode) {
+        const node = _gSimNodes.find(n => n.id === d.id);
+        if (node) node._mapVirtualLatLon = [newLat, newLon];
+      }
+      dismissNodeEditPopup();
+      if (graphInited) updateGraphViz();
+    });
+
+    actions.appendChild(clearBtn);
+    actions.appendChild(cancelBtn);
+    actions.appendChild(saveBtn);
+    pop.appendChild(actions);
+
+    document.body.appendChild(pop);
+    const pw = pop.offsetWidth, ph2 = pop.offsetHeight;
+    const x = Math.min(event.clientX + 8, window.innerWidth  - pw  - 12);
+    const y = Math.min(event.clientY + 8, window.innerHeight - ph2 - 12);
+    pop.style.left = `${x}px`;
+    pop.style.top  = `${y}px`;
+    _nodeEditPopup = pop;
+    nameInp.focus();
+
+    setTimeout(() => {
+      document.addEventListener("click", (e) => {
+        if (_nodeEditPopup && !_nodeEditPopup.contains(e.target)) dismissNodeEditPopup();
+      }, { once: true });
+    }, 0);
   }
 
   // Force-mode state
@@ -2735,11 +2949,13 @@
     const pos = new Map();
     const edgesArr = [...graphEdges.values()];
 
-    // Step 1 — geo-nodes (real or virtual from a previous drag)
+    // Step 1 — geo-nodes (real GPS, user-dragged virtual, or custom lat/lon)
     // Treat 0,0 (null island — GPS-less devices default) as no location
     for (const n of _gSimNodes) {
+      const custom = _customNodeData[n.id];
       const ll = n._mapVirtualLatLon ??
-        (n.lat != null && n.lon != null && !(n.lat === 0 && n.lon === 0) ? [n.lat, n.lon] : null);
+        (n.lat != null && n.lon != null && !(n.lat === 0 && n.lon === 0) ? [n.lat, n.lon] :
+         (custom?.lat != null && custom?.lon != null ? [custom.lat, custom.lon] : null));
       if (ll) {
         const pt = _leafletMap.latLngToContainerPoint(ll);
         pos.set(n.id, { x: pt.x, y: pt.y });
@@ -2773,7 +2989,10 @@
     if (isolates.length) {
       // Compute the lat/lon centroid of all geo-nodes to use as anchor
       const geoNodes = _gSimNodes.filter(n => {
-        const ll = n._mapVirtualLatLon ?? (n.lat != null ? [n.lat, n.lon] : null);
+        const custom = _customNodeData[n.id];
+        const ll = n._mapVirtualLatLon ??
+          (n.lat != null ? [n.lat, n.lon] :
+           (custom?.lat != null ? [custom.lat, custom.lon] : null));
         return ll != null;
       });
       let anchorPt;
@@ -2876,9 +3095,12 @@
       .merge(linkUpd)
       .attr("stroke",       d => `rgba(79,142,247,${0.15 + 0.65*(d.strength/maxStr)})`)
       .attr("stroke-width", d => 1 + 4*(d.strength/maxStr))
-      .on("click", (event, d) => showGraphTooltip(event,
-          `${graphNodes.get(d.a)?.name || d.a.slice(0,8)} ↔ ${graphNodes.get(d.b)?.name || d.b.slice(0,8)}\n` +
-          `Observations: ${d.count}\nStrength: ${d.strength.toFixed(2)}\nLast seen: ${fmtAgo(d.last_seen)}`));
+      .on("click", (event, d) => {
+        const na = graphNodes.get(d.a), nb = graphNodes.get(d.b);
+        showGraphTooltip(event,
+          `${na ? effectiveName(na) : d.a.slice(0,8)} ↔ ${nb ? effectiveName(nb) : d.b.slice(0,8)}\n` +
+          `Observations: ${d.count}\nStrength: ${d.strength.toFixed(2)}\nLast seen: ${fmtAgo(d.last_seen)}`);
+      });
     linkUpd.exit().remove();
     _gLinkSel = graphG.select(".links").selectAll("line.graph-link");
 
@@ -2894,6 +3116,11 @@
       } else {
         n.x = W/2 + (Math.random()-0.5)*W*0.5;
         n.y = H/2 + (Math.random()-0.5)*H*0.5;
+        // First appearance: seed map position from custom lat/lon if node has no real GPS
+        const custom = _customNodeData[n.id];
+        if (custom?.lat != null && custom?.lon != null && n.lat == null) {
+          n._mapVirtualLatLon = [custom.lat, custom.lon];
+        }
       }
     }
     _gSimNodes = nodesArr;
@@ -2921,7 +3148,10 @@
             if (d.lat == null && d.lon == null) { d.fx = null; d.fy = null; }
           } else {
             // Map mode: store drop position as virtual lat/lon so it follows the map
-            d._mapVirtualLatLon = _leafletMap.containerPointToLatLng([event.x, event.y]);
+            const ll = _leafletMap.containerPointToLatLng([event.x, event.y]);
+            d._mapVirtualLatLon = ll;
+            // Persist the dragged position so it survives page refresh
+            setCustomNode(d.id, { lat: ll.lat, lon: ll.lng });
             renderGraphPositions();
           }
         })
@@ -2935,22 +3165,36 @@
       .attr("r",      d => 8 + 12*((_degree.get(d.id)||0)/_maxDeg))
       .attr("fill",   d => nodeColor(d))
       .attr("stroke", d => d3.color(nodeColor(d)).brighter(0.8))
-      .attr("stroke-width", d => d.lat != null ? 3 : 2) // thicker ring for geo-nodes
+      .attr("stroke-width", d => (d.lat != null || _customNodeData[d.id]?.lat != null) ? 3 : 2)
       .on("click", (event, d) => {
+        dismissNodeEditPopup();
         const links = edgesArr.filter(e => e.a===d.id || e.b===d.id).length;
+        const custom = _customNodeData[d.id];
+        const locStr = d.lat != null
+          ? `📍 ${d.lat.toFixed(5)}, ${d.lon.toFixed(5)}`
+          : custom?.lat != null
+            ? `📍 ${custom.lat.toFixed(5)}, ${custom.lon.toFixed(5)} (custom)`
+            : "📍 No location";
         showGraphTooltip(event,
-          `${d.name}\n` +
-          (d.is_self ? "📱 This device\n" :
+          `${effectiveName(d)}${hasCustomData(d) ? " ✎" : ""}\n` +
+          (d.is_self ? "This device\n" :
             d.node_type != null ? `Type: ${["Client","Repeater","Room","Gateway"][d.node_type]||"Unknown"}\n` : "") +
-          (d.lat  != null ? `📍 ${d.lat.toFixed(5)}, ${d.lon.toFixed(5)}\n` : "📍 No location\n") +
+          `${locStr}\n` +
           `Links: ${links}   Strength: ${(_degree.get(d.id)||0).toFixed(1)}\n` +
           (d.avg_snr  != null ? `Avg SNR: ${d.avg_snr} dB\n`  : "") +
-          (d.avg_rssi != null ? `Avg RSSI: ${d.avg_rssi} dBm` : ""));
+          (d.avg_rssi != null ? `Avg RSSI: ${d.avg_rssi} dBm\n` : "") +
+          "Right-click to edit");
+      })
+      .on("contextmenu", (event, d) => {
+        if (!d.is_self) showNodeEditPopup(event, d);
       });
 
     nodeMerge.select("text.graph-node-label")
-      .text(d => d.name)
+      .text(d => effectiveName(d))
       .attr("dy", d => -(10 + 12*((_degree.get(d.id)||0)/_maxDeg)));
+
+    // Mark nodes that have custom overrides (italic label via CSS)
+    nodeEnter.merge(nodeBind).classed("has-custom", d => hasCustomData(d));
 
     nodeBind.exit().remove();
     _gNodeSel = graphG.select(".gnodes").selectAll("g.gnode");
