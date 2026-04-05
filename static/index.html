@@ -642,6 +642,56 @@
     }
     .map-link:hover { text-decoration: underline; }
 
+    /* ── Rankings page ── */
+    #page-rankings {
+      overflow-y: auto; padding: 16px;
+      gap: 16px; flex-direction: column;
+    }
+    #page-rankings::-webkit-scrollbar { width: 6px; }
+    #page-rankings::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    .rank-section-title {
+      font-size: 13px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.07em; color: var(--text-muted); margin-bottom: 4px;
+    }
+    .rank-table {
+      width: 100%; border-collapse: collapse;
+      background: var(--surface); border-radius: 12px; overflow: hidden;
+      border: 1px solid var(--border);
+    }
+    .rank-table th {
+      text-align: left; padding: 9px 12px;
+      font-size: 11px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.05em; color: var(--text-muted);
+      background: var(--surface2); border-bottom: 1px solid var(--border);
+    }
+    .rank-table td {
+      padding: 9px 12px; font-size: 13px;
+      border-bottom: 1px solid var(--border);
+    }
+    .rank-table tr:last-child td { border-bottom: none; }
+    .rank-table tr:hover td { background: var(--surface2); }
+    .rank-num {
+      font-size: 12px; font-weight: 700; color: var(--text-muted);
+      width: 28px; text-align: right;
+    }
+    .rank-name { font-weight: 600; color: var(--text); }
+    .rank-count {
+      font-weight: 700; color: var(--accent);
+      text-align: right; white-space: nowrap;
+    }
+    .rank-map-btn {
+      background: none; border: none; color: var(--accent);
+      cursor: pointer; padding: 2px 6px; border-radius: 6px;
+      font-size: 12px; display: flex; align-items: center; gap: 4px;
+    }
+    .rank-map-btn:hover { background: var(--accent-dim); }
+    .rank-strength { color: var(--status-ok); font-size: 12px; }
+    .rank-empty {
+      color: var(--text-muted); font-size: 14px;
+      text-align: center; padding: 20px;
+    }
+
     /* ── Status pill ── */
     #status {
       font-size: 12px;
@@ -1075,6 +1125,10 @@
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="3"/><circle cx="5" cy="19" r="3"/><circle cx="19" cy="19" r="3"/><line x1="12" y1="8" x2="5.5" y2="16"/><line x1="12" y1="8" x2="18.5" y2="16"/></svg>
         Nodes
       </button>
+      <button class="nav-item" data-page="rankings">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+        Rankings
+      </button>
     </div>
   </div>
 </header>
@@ -1245,7 +1299,7 @@
     <button class="mgmt-btn" id="graph-reset-btn">Reset layout</button>
     <div id="graph-filters">
       <span class="gf-label">Age ≤</span>
-      <input type="range" class="gf-range" id="graph-age-slider" min="1" max="168" step="1" value="168">
+      <input type="range" class="gf-range" id="graph-age-slider" min="0" max="100" step="1" value="100">
       <span class="gf-val" id="graph-age-label">7d</span>
       <div class="gf-sep"></div>
       <span class="gf-label">Strength ≥</span>
@@ -1269,6 +1323,12 @@
 <div id="page-nodes" class="page">
   <div id="nodes-list" style="padding:16px;display:flex;flex-direction:column;gap:12px;overflow-y:auto;flex:1;min-height:0">
     <p style="color:var(--text-muted);font-size:14px;text-align:center;margin-top:40px">Waiting for node advertisements…</p>
+  </div>
+</div>
+
+<div id="page-rankings" class="page">
+  <div id="rankings-content" style="display:flex;flex-direction:column;gap:20px;padding:16px;overflow-y:auto;flex:1;min-height:0">
+    <p id="rankings-empty" style="color:var(--text-muted);font-size:14px;text-align:center;margin-top:40px">No path data yet — rankings appear once messages are received.</p>
   </div>
 </div>
 
@@ -1758,6 +1818,10 @@
       if (graphInited) highlightMessageRoute(msg.sender_hash || "", pathHashes);
       showGraphInfo(msg);
     }
+
+    if (document.getElementById("page-rankings").classList.contains("active")) {
+      renderRankings();
+    }
   }
 
   // Show a total unread dot on the button when dropdown is closed
@@ -1827,6 +1891,7 @@
         }));
       }
       if (page === "nodes") renderNodes();
+      if (page === "rankings") renderRankings();
     });
   });
 
@@ -1972,6 +2037,151 @@
     if (document.getElementById("page-nodes").classList.contains("active")) {
       renderNodes();
     }
+    if (document.getElementById("page-rankings").classList.contains("active")) {
+      renderRankings();
+    }
+  }
+
+  // ── Rankings page ─────────────────────────────────────────────────────────
+  // Navigate to graph page and highlight a specific node by its hash
+  function showNodeOnGraph(nodeId) {
+    document.querySelectorAll(".page").forEach(p => p.classList.remove("active"));
+    document.getElementById("page-graph").classList.add("active");
+    navMenu.querySelectorAll(".nav-item").forEach(b => b.classList.remove("active"));
+    const graphBtn = document.querySelector(".nav-item[data-page='graph']");
+    if (graphBtn) graphBtn.classList.add("active");
+    navMenu.classList.remove("open");
+    _graphPageOpen = true;
+    _highlightNodeId = nodeId;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (!graphInited) initGraphSvg();
+      else { updateGraphViz(); _applyNodeHighlight(); }
+    }));
+  }
+
+  function renderRankings() {
+    const el = document.getElementById("rankings-content");
+    if (!el) return;
+
+    // ── Build path counts: how many messages each hash appears in ─────────────
+    const pathCounts = new Map(); // hash → { name, count }
+    for (const [, ch] of channels) {
+      for (const msg of ch.messages) {
+        if (!msg.path) continue;
+        // Include relay hops in the path
+        for (const node of msg.path) {
+          const h = (typeof node === "object") ? node.hash : node;
+          const name = (typeof node === "object" && node.name) ? node.name : null;
+          if (!h) continue;
+          if (!pathCounts.has(h)) pathCounts.set(h, { hash: h, name: name || h.slice(0, 8), count: 0 });
+          const rec = pathCounts.get(h);
+          rec.count++;
+          if (name && rec.name === h.slice(0, 8)) rec.name = name; // prefer named over hash
+        }
+      }
+    }
+
+    // Filter to repeaters only (node_type === 1) where possible, fall back to all
+    const isRepeater = (hash) => {
+      const gn = graphNodes.get(hash);
+      if (gn && gn.node_type != null) return gn.node_type === 1;
+      // check contacts map by prefix
+      for (const [k, c] of contactsMap) {
+        if (hash.startsWith(k) || k.startsWith(hash)) return c.node_type === 1;
+      }
+      return true; // unknown — include it
+    };
+
+    const topPaths = [...pathCounts.values()]
+      .filter(r => isRepeater(r.hash))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 10);
+
+    // ── Build link rankings from graphEdges ───────────────────────────────────
+    const now6h = Date.now() / 1000 - 6 * 3600;
+    const linkCount = new Map(); // hash → { name, links: 0, maxStrength: 0 }
+    for (const e of graphEdges.values()) {
+      for (const h of [e.a, e.b]) {
+        if (h === "self") continue;
+        if (!linkCount.has(h)) {
+          const gn = graphNodes.get(h);
+          linkCount.set(h, { hash: h, name: (gn && gn.name) || h.slice(0, 8), links: 0, maxStrength: 0, recentLinks: 0 });
+        }
+        const rec = linkCount.get(h);
+        rec.links++;
+        if (e.strength > rec.maxStrength) rec.maxStrength = e.strength;
+        if (e.last_seen >= now6h) rec.recentLinks++;
+      }
+    }
+
+    const topLinked = [...linkCount.values()]
+      .filter(r => isRepeater(r.hash))
+      .sort((a, b) => b.links - a.links || b.maxStrength - a.maxStrength)
+      .slice(0, 10);
+
+    const topStrength = [...linkCount.values()]
+      .filter(r => isRepeater(r.hash))
+      .sort((a, b) => b.maxStrength - a.maxStrength)
+      .slice(0, 10);
+
+    if (topPaths.length === 0 && topLinked.length === 0) {
+      el.innerHTML = '<p id="rankings-empty" style="color:var(--text-muted);font-size:14px;text-align:center;margin-top:40px">No path data yet — rankings appear once messages are received.</p>';
+      return;
+    }
+
+    function mapBtn(hash) {
+      return `<button class="rank-map-btn" onclick="showNodeOnGraph('${hash}')">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>map</button>`;
+    }
+
+    function buildTable(rows, columns) {
+      if (rows.length === 0) return '<p class="rank-empty">No data</p>';
+      const headers = columns.map(c => `<th>${c.label}</th>`).join("");
+      const body = rows.map((r, i) => {
+        const cells = columns.map(c => `<td class="${c.cls || ''}">${c.fn(r, i)}</td>`).join("");
+        return `<tr>${cells}</tr>`;
+      }).join("");
+      return `<table class="rank-table"><thead><tr>${headers}</tr></thead><tbody>${body}</tbody></table>`;
+    }
+
+    const sections = [];
+
+    // Top 10 by path appearances
+    sections.push(`<div>
+      <div class="rank-section-title">Top repeaters by path appearances</div>
+      ${buildTable(topPaths, [
+        { label: "#",        cls: "rank-num",   fn: (r, i) => i + 1 },
+        { label: "Repeater", cls: "rank-name",  fn: r => r.name },
+        { label: "Messages in path", cls: "rank-count", fn: r => r.count },
+        { label: "",         cls: "",           fn: r => mapBtn(r.hash) },
+      ])}
+    </div>`);
+
+    // Top 10 by link count
+    sections.push(`<div>
+      <div class="rank-section-title">Top repeaters by link count</div>
+      ${buildTable(topLinked, [
+        { label: "#",        cls: "rank-num",   fn: (r, i) => i + 1 },
+        { label: "Repeater", cls: "rank-name",  fn: r => r.name },
+        { label: "Links",    cls: "rank-count", fn: r => r.links },
+        { label: "Active (6h)", cls: "rank-strength", fn: r => r.recentLinks },
+        { label: "",         cls: "",           fn: r => mapBtn(r.hash) },
+      ])}
+    </div>`);
+
+    // Top 10 by strongest link
+    sections.push(`<div>
+      <div class="rank-section-title">Strongest repeaters (path observations, last 6 h)</div>
+      ${buildTable(topStrength, [
+        { label: "#",        cls: "rank-num",   fn: (r, i) => i + 1 },
+        { label: "Repeater", cls: "rank-name",  fn: r => r.name },
+        { label: "Peak strength", cls: "rank-count", fn: r => r.maxStrength.toFixed(2) },
+        { label: "Links",    cls: "rank-strength", fn: r => r.links },
+        { label: "",         cls: "",           fn: r => mapBtn(r.hash) },
+      ])}
+    </div>`);
+
+    el.innerHTML = sections.join("");
   }
 
   // ── Contacts page ────────────────────────────────────────────────────────
@@ -2597,7 +2807,9 @@
 
     // Synthesize any missing nodes/edges so the highlight is always contiguous.
     // Also record which edges flow reverse (b→a) so animation direction is correct.
-    // These placeholders are overwritten when the real graph_snapshot arrives.
+    // Update last_seen for all path edges to now — nodes in the most recent
+    // message path must never disappear due to the age filter.
+    const nowSec = Date.now() / 1000;
     let graphDirty = false;
     for (let i = 0; i < chain.length - 1; i++) {
       const srcId = chain[i];
@@ -2608,9 +2820,13 @@
       _routeLinkKeys.add(key);
       // If message flowed b→a (against canonical order), mark as reverse
       if (srcId === b) _routeLinkReverse.add(key);
-      if (!graphEdges.has(`${a}:${b}`)) {
-        graphEdges.set(`${a}:${b}`, { a, b, count: 0, strength: 0.5, last_seen: Date.now() / 1000 });
+      if (!graphEdges.has(key)) {
+        graphEdges.set(key, { a, b, count: 0, strength: 0.5, last_seen: nowSec });
         graphDirty = true;
+      } else {
+        // Refresh last_seen so the age filter won't hide these nodes
+        const e = graphEdges.get(key);
+        if (nowSec > e.last_seen) { e.last_seen = nowSec; graphDirty = true; }
       }
       for (const h of [srcId, dstId]) {
         if (!graphNodes.has(h)) {
@@ -2764,9 +2980,21 @@
   _loadCustomNodeData();
 
   // ── Graph filter settings ─────────────────────────────────────────────────
-  // maxAgeHours: show edges last seen within this many hours (1–168)
+  // maxAgeHours: fractional hours (supports sub-hour values for minute-level ages)
   // minStrengthPct: hide edges weaker than this % of the current max strength (0–90)
+  // Age slider is logarithmic: slider 0–100 maps to 1 min – 7 days
   let _graphFilters = { maxAgeHours: 168, minStrengthPct: 0 };
+
+  // Logarithmic mapping: slider value 0–100 ↔ age 1 min – 10080 min (7 days)
+  const _AGE_MIN_MINS = 1, _AGE_MAX_MINS = 10080; // 7 * 24 * 60
+  function _sliderToHours(v) {
+    const mins = Math.exp(v * Math.log(_AGE_MAX_MINS) / 100);
+    return mins / 60;
+  }
+  function _hoursToSlider(h) {
+    const mins = Math.max(_AGE_MIN_MINS, h * 60);
+    return Math.round(100 * Math.log(mins) / Math.log(_AGE_MAX_MINS));
+  }
 
   function _loadGraphFilters() {
     try {
@@ -2779,15 +3007,17 @@
     try { localStorage.setItem("graphFilters", JSON.stringify(_graphFilters)); } catch {}
   }
   function _fmtAgeHours(h) {
+    const mins = h * 60;
+    if (mins < 60) return `${Math.round(mins)}m`;
     if (h >= 168) return "7d";
     if (h >= 48)  return `${Math.round(h/24)}d`;
     if (h >= 24)  return "24h";
-    return `${h}h`;
+    return `${Math.round(h)}h`;
   }
   function _syncFilterUI() {
     const ageSlider = document.getElementById("graph-age-slider");
     const strSlider = document.getElementById("graph-str-slider");
-    if (ageSlider) ageSlider.value = _graphFilters.maxAgeHours;
+    if (ageSlider) ageSlider.value = _hoursToSlider(_graphFilters.maxAgeHours);
     if (strSlider) strSlider.value = _graphFilters.minStrengthPct;
     const ageLabel = document.getElementById("graph-age-label");
     const strLabel = document.getElementById("graph-str-label");
@@ -2799,8 +3029,8 @@
   _syncFilterUI();
 
   document.getElementById("graph-age-slider").addEventListener("input", function() {
-    _graphFilters.maxAgeHours = +this.value;
-    document.getElementById("graph-age-label").textContent = _fmtAgeHours(+this.value);
+    _graphFilters.maxAgeHours = _sliderToHours(+this.value);
+    document.getElementById("graph-age-label").textContent = _fmtAgeHours(_graphFilters.maxAgeHours);
     _saveGraphFilters();
     if (graphInited) updateGraphViz();
   });
@@ -3432,7 +3662,14 @@
         if (isNew) brandNew.push(n.id); // genuinely just appeared
       }
     }
-    for (const e of (data.edges || [])) graphEdges.set(`${e.a}:${e.b}`, e);
+    // Merge server edge data but preserve any last_seen values we refreshed locally
+    // (path edges get refreshed to now in highlightMessageRoute — don't overwrite them)
+    for (const e of (data.edges || [])) {
+      const key = `${e.a}:${e.b}`;
+      const existing = graphEdges.get(key);
+      if (existing && existing.last_seen > e.last_seen) e.last_seen = existing.last_seen;
+      graphEdges.set(key, e);
+    }
 
     updateGraphNavBadge();
 
@@ -3449,6 +3686,10 @@
             setTimeout(() => d3.select(el).classed("just-appeared", false).classed("is-new", true), 600);
           });
       }
+    }
+
+    if (document.getElementById("page-rankings").classList.contains("active")) {
+      renderRankings();
     }
   }
 
