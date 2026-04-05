@@ -509,7 +509,8 @@
       max-width: 200px; line-height: 1.6;
     }
     /* ── Route highlight (persistent orange dashes on last message path) ── */
-    @keyframes routeFlow { to { stroke-dashoffset: -24; } }
+    @keyframes routeFlow    { to { stroke-dashoffset: -24; } }
+    @keyframes routeFlowRev { to { stroke-dashoffset:  24; } }
     .graph-link.link-route {
       stroke: #ff9a3c !important;
       stroke-width: 4 !important;
@@ -517,6 +518,8 @@
       animation: routeFlow 0.7s linear infinite;
       filter: drop-shadow(0 0 5px rgba(255,154,60,0.65));
     }
+    /* edges where the message flowed against canonical (a→b) direction */
+    .graph-link.link-route.link-route-rev { animation-name: routeFlowRev; }
     /* ── New node animations ── */
     @keyframes nodeAppear {
       0%   { opacity: 0; r: 0; }
@@ -553,7 +556,9 @@
     #graph-toast .toast-hops {
       font-size: 10px; color: var(--text-muted); white-space: nowrap;
       background: var(--surface2); border-radius: 4px; padding: 1px 5px;
+      cursor: pointer; user-select: none;
     }
+    #graph-toast .toast-hops:hover { color: var(--accent); background: var(--accent-dim); }
     #graph-toast .toast-text { color: var(--text); word-break: break-word; }
     /* ── Highlighted sender node (from "show on map" / incoming message) ── */
     .gnode.is-highlighted > circle.graph-node-circle {
@@ -1412,10 +1417,12 @@
     return el;
   }
 
-  // ── Hop-path popup ───────────────────────────────────────────────────────
+  // ── Path popup (full chain: sender → relays → You) ──────────────────────
+  // Used from chat hop badge, chat map-pin area, and graph info panel.
+  // msg: the full message object (needs .sender, .path, optionally .sender_hash)
   let _hopPopup = null;
 
-  function showHopPopup(event, pathNodes) {
+  function showPathPopup(event, msg) {
     dismissHopPopup();
 
     const pop = document.createElement("div");
@@ -1423,40 +1430,52 @@
 
     const title = document.createElement("div");
     title.className = "pop-title";
-    title.textContent = "Relay path";
+    title.textContent = "Full path";
     pop.appendChild(title);
 
-    pathNodes.forEach((node, i) => {
+    // Build full chain: sender → relay hops → You
+    const entries = [];
+    entries.push({ label: msg.sender, role: "sender" });
+    for (const node of (msg.path || [])) {
+      const name = (typeof node === "object") ? (node.name || node.hash?.slice(0, 8) || "?") : String(node).slice(0, 8);
+      entries.push({ label: name, role: "relay" });
+    }
+    entries.push({ label: "You", role: "self" });
+
+    entries.forEach((entry, i) => {
       const row = document.createElement("div");
       row.className = "pop-node";
 
+      // Arrow connector between nodes
+      if (i > 0) {
+        const arrow = document.createElement("div");
+        arrow.className = "pop-node";
+        arrow.style.cssText = "color:var(--text-muted);font-size:10px;padding:0 2px";
+        arrow.textContent = "▾";
+        pop.appendChild(arrow);
+      }
+
       const idx = document.createElement("span");
       idx.className = "pop-node-idx";
-      idx.textContent = `${i + 1}.`;
+      idx.textContent = i === 0 ? "↑" : i === entries.length - 1 ? "↓" : `${i}.`;
       row.appendChild(idx);
 
       const label = document.createElement("span");
-      if (node.name) {
-        label.className = "pop-node-name";
-        label.textContent = node.name;
-      } else {
-        label.className = "pop-node-hash";
-        label.textContent = node.hash.slice(0, 8);
-      }
+      label.className = entry.role === "relay" ? "pop-node-hash" : "pop-node-name";
+      if (entry.role === "sender") label.style.color = "var(--accent)";
+      if (entry.role === "self")   label.style.color = "var(--status-ok)";
+      label.textContent = entry.label;
       row.appendChild(label);
       pop.appendChild(row);
     });
 
-    // Position near the badge click
     document.body.appendChild(pop);
     const x = Math.min(event.clientX + 8, window.innerWidth  - pop.offsetWidth  - 12);
     const y = Math.min(event.clientY + 8, window.innerHeight - pop.offsetHeight - 12);
     pop.style.left = `${x}px`;
     pop.style.top  = `${y}px`;
-
     _hopPopup = pop;
 
-    // Dismiss on next click anywhere
     setTimeout(() => {
       document.addEventListener("click", dismissHopPopup, { once: true });
     }, 0);
@@ -1549,21 +1568,21 @@
                       !(msg.sender_lat === 0 && msg.sender_lon === 0);
 
       if (hasPath) {
+        // Hop count: click to show full path popup
         const badge = document.createElement("span");
         badge.className = "hop-badge";
         badge.textContent = `${msg.hops} hop${msg.hops !== 1 ? "s" : ""}`;
-        badge.title = "Show route on map";
-        badge.addEventListener("click", (e) => { e.stopPropagation(); showOnMap(msg); });
+        badge.title = "Click to see full path";
+        badge.addEventListener("click", (e) => { e.stopPropagation(); showPathPopup(e, msg); });
         senderDiv.appendChild(badge);
       } else {
-        // Direct (no relay hops) — show indicator + SNR
         const direct = document.createElement("span");
         direct.className = "direct-badge";
         direct.textContent = "direct" + (msg.snr != null ? ` · ${msg.snr} dB` : "");
         senderDiv.appendChild(direct);
       }
 
-      // Show-on-map button: visible for hops (extra context) or when location is known
+      // Map-pin button: always separate from the hop count — show route on map
       if (hasPath || hasLoc) {
         const mapBtn = document.createElement("button");
         mapBtn.className = "sender-map-btn";
@@ -1657,7 +1676,7 @@
       _lastHighlightedMsg = msg;
       const pathHashes = (msg.path || []).map(h => (typeof h === "object" ? h.hash : h));
       if (graphInited) highlightMessageRoute(msg.sender_hash || "", pathHashes);
-      showGraphInfo(msg.sender, msg.text, msg.hops || 0);
+      showGraphInfo(msg);
     }
   }
 
@@ -2440,25 +2459,47 @@
 
   // ── Graph message info panel ─────────────────────────────────────────────
   // Persistent — stays until the next message arrives (no auto-dismiss).
-  function showGraphInfo(sender, text, pathLen) {
+  let _infoPanelMsg = null; // current message shown in panel (for path popup)
+
+  function showGraphInfo(msg) {
     const el = document.getElementById("graph-toast");
     if (!el) return;
-    el.querySelector(".toast-sender").textContent = sender;
-    el.querySelector(".toast-hops").textContent =
-      pathLen > 0 ? `${pathLen} hop${pathLen !== 1 ? "s" : ""}` : "direct";
-    el.querySelector(".toast-text").textContent = text.length > 100 ? text.slice(0, 100) + "…" : text;
+    _infoPanelMsg = msg;
+    el.querySelector(".toast-sender").textContent = msg.sender;
+    const hopsEl = el.querySelector(".toast-hops");
+    if (msg.hops > 0) {
+      hopsEl.textContent = `${msg.hops} hop${msg.hops !== 1 ? "s" : ""}`;
+      hopsEl.title = "Click to see full path";
+      hopsEl.style.display = "";
+    } else {
+      hopsEl.textContent = "direct";
+      hopsEl.title = "";
+      hopsEl.style.display = "";
+    }
+    el.querySelector(".toast-text").textContent =
+      msg.text.length > 100 ? msg.text.slice(0, 100) + "…" : msg.text;
     el.classList.add("visible");
   }
 
+  document.getElementById("graph-toast").querySelector(".toast-hops")
+    .addEventListener("click", (e) => {
+      if (_infoPanelMsg && _infoPanelMsg.path?.length > 0) {
+        e.stopPropagation();
+        showPathPopup(e, _infoPanelMsg);
+      }
+    });
 
-  let _routeLinkKeys     = new Set();
-  let _highlightNodeId   = null;   // sender node to highlight in graph
-  let _messagePin        = null;   // Leaflet marker for sender location
-  let _lastHighlightedMsg = null;  // last msg passed to showOnMap / processMessage
+
+  let _routeLinkKeys    = new Set();
+  let _routeLinkReverse = new Set(); // edge keys where message flowed b→a (reverse of canonical)
+  let _highlightNodeId  = null;   // sender node to highlight in graph
+  let _messagePin       = null;   // Leaflet marker for sender location
+  let _lastHighlightedMsg = null; // last msg passed to showOnMap / processMessage
 
   function clearRouteHighlight() {
-    if (_gLinkSel) _gLinkSel.classed("link-route", false);
+    if (_gLinkSel) _gLinkSel.classed("link-route", false).classed("link-route-rev", false);
     _routeLinkKeys.clear();
+    _routeLinkReverse.clear();
     _highlightNodeId = null;
     if (_messagePin) { _messagePin.remove(); _messagePin = null; }
     if (_gNodeSel) _gNodeSel.classed("is-highlighted", false);
@@ -2475,6 +2516,7 @@
     _highlightNodeId = senderHash || null;
 
     // Synthesize any missing nodes/edges so the highlight is always contiguous.
+    // Also record which edges flow reverse (b→a) so animation direction is correct.
     // These placeholders are overwritten when the real graph_snapshot arrives.
     let graphDirty = false;
     for (let i = 0; i < chain.length - 1; i++) {
@@ -2482,7 +2524,10 @@
       const dstId = chain[i + 1];
       const a = srcId < dstId ? srcId : dstId;
       const b = srcId < dstId ? dstId : srcId;
-      _routeLinkKeys.add(`${a}:${b}`);
+      const key = `${a}:${b}`;
+      _routeLinkKeys.add(key);
+      // If message flowed b→a (against canonical order), mark as reverse
+      if (srcId === b) _routeLinkReverse.add(key);
       if (!graphEdges.has(`${a}:${b}`)) {
         graphEdges.set(`${a}:${b}`, { a, b, count: 0, strength: 0.5, last_seen: Date.now() / 1000 });
         graphDirty = true;
@@ -2502,7 +2547,9 @@
 
   function _applyRouteHighlight() {
     if (!_gLinkSel || !_routeLinkKeys.size) return;
-    _gLinkSel.classed("link-route", d => _routeLinkKeys.has(`${d.a}:${d.b}`));
+    _gLinkSel
+      .classed("link-route",     d => _routeLinkKeys.has(`${d.a}:${d.b}`))
+      .classed("link-route-rev", d => _routeLinkReverse.has(`${d.a}:${d.b}`));
   }
 
   function _applyNodeHighlight() {
@@ -2580,7 +2627,7 @@
       setGraphMapMode(true);
       highlightMessageRoute(senderHash, pathHashes);
       updateSenderMarker(msg);
-      showGraphInfo(msg.sender, msg.text, msg.hops || 0);
+      showGraphInfo(msg);
       markGraphNodesRead();
     }));
   }
