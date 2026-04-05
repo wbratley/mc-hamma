@@ -565,6 +565,30 @@
       stroke: #4f8ef7 !important; stroke-width: 4 !important;
       filter: drop-shadow(0 0 8px rgba(79,142,247,0.9));
     }
+    /* ── Graph filter sliders ── */
+    #graph-filters {
+      width: 100%; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+      padding-top: 7px; border-top: 1px solid var(--border);
+      font-size: 11px; color: var(--text-muted);
+    }
+    .gf-label { white-space: nowrap; }
+    .gf-val   { white-space: nowrap; min-width: 28px; color: var(--text); font-weight: 600; }
+    input[type=range].gf-range {
+      -webkit-appearance: none; appearance: none;
+      height: 3px; border-radius: 2px;
+      background: var(--border); outline: none; cursor: pointer;
+      width: 90px;
+    }
+    input[type=range].gf-range::-webkit-slider-thumb {
+      -webkit-appearance: none; width: 12px; height: 12px; border-radius: 50%;
+      background: var(--accent); cursor: pointer; border: none;
+    }
+    input[type=range].gf-range::-moz-range-thumb {
+      width: 12px; height: 12px; border-radius: 50%;
+      background: var(--accent); cursor: pointer; border: none;
+    }
+    .gf-sep { width: 1px; height: 14px; background: var(--border); flex-shrink: 0; }
+
     .graph-legend {
       display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
       font-size: 11px; color: var(--text-muted);
@@ -1219,6 +1243,15 @@
       <option value="standard">Standard</option>
     </select>
     <button class="mgmt-btn" id="graph-reset-btn">Reset layout</button>
+    <div id="graph-filters">
+      <span class="gf-label">Age ≤</span>
+      <input type="range" class="gf-range" id="graph-age-slider" min="1" max="168" step="1" value="168">
+      <span class="gf-val" id="graph-age-label">7d</span>
+      <div class="gf-sep"></div>
+      <span class="gf-label">Strength ≥</span>
+      <input type="range" class="gf-range" id="graph-str-slider" min="0" max="90" step="5" value="0">
+      <span class="gf-val" id="graph-str-label">0%</span>
+    </div>
   </div>
   <div id="graph-container">
     <div id="graph-map" class="hidden"></div>
@@ -2730,6 +2763,54 @@
 
   _loadCustomNodeData();
 
+  // ── Graph filter settings ─────────────────────────────────────────────────
+  // maxAgeHours: show edges last seen within this many hours (1–168)
+  // minStrengthPct: hide edges weaker than this % of the current max strength (0–90)
+  let _graphFilters = { maxAgeHours: 168, minStrengthPct: 0 };
+
+  function _loadGraphFilters() {
+    try {
+      const s = JSON.parse(localStorage.getItem("graphFilters") || "{}");
+      if (s.maxAgeHours    != null) _graphFilters.maxAgeHours    = s.maxAgeHours;
+      if (s.minStrengthPct != null) _graphFilters.minStrengthPct = s.minStrengthPct;
+    } catch {}
+  }
+  function _saveGraphFilters() {
+    try { localStorage.setItem("graphFilters", JSON.stringify(_graphFilters)); } catch {}
+  }
+  function _fmtAgeHours(h) {
+    if (h >= 168) return "7d";
+    if (h >= 48)  return `${Math.round(h/24)}d`;
+    if (h >= 24)  return "24h";
+    return `${h}h`;
+  }
+  function _syncFilterUI() {
+    const ageSlider = document.getElementById("graph-age-slider");
+    const strSlider = document.getElementById("graph-str-slider");
+    if (ageSlider) ageSlider.value = _graphFilters.maxAgeHours;
+    if (strSlider) strSlider.value = _graphFilters.minStrengthPct;
+    const ageLabel = document.getElementById("graph-age-label");
+    const strLabel = document.getElementById("graph-str-label");
+    if (ageLabel) ageLabel.textContent = _fmtAgeHours(_graphFilters.maxAgeHours);
+    if (strLabel) strLabel.textContent = `${_graphFilters.minStrengthPct}%`;
+  }
+
+  _loadGraphFilters();
+  _syncFilterUI();
+
+  document.getElementById("graph-age-slider").addEventListener("input", function() {
+    _graphFilters.maxAgeHours = +this.value;
+    document.getElementById("graph-age-label").textContent = _fmtAgeHours(+this.value);
+    _saveGraphFilters();
+    if (graphInited) updateGraphViz();
+  });
+  document.getElementById("graph-str-slider").addEventListener("input", function() {
+    _graphFilters.minStrengthPct = +this.value;
+    document.getElementById("graph-str-label").textContent = `${this.value}%`;
+    _saveGraphFilters();
+    if (graphInited) updateGraphViz();
+  });
+
   // ── Node edit popup ───────────────────────────────────────────────────────
   let _nodeEditPopup = null;
 
@@ -3074,7 +3155,20 @@
     if (!graphInited || !graphG) return;
 
     const nodesArr = [...graphNodes.values()];
-    const edgesArr = [...graphEdges.values()];
+    let   edgesArr = [...graphEdges.values()];
+
+    // ── Apply edge filters ───────────────────────────────────────────────
+    const now = Date.now() / 1000;
+    const maxAgeSecs = _graphFilters.maxAgeHours * 3600;
+    const allMaxStr  = Math.max(...edgesArr.map(e => e.strength), 1);
+    const minStr     = (_graphFilters.minStrengthPct / 100) * allMaxStr;
+    edgesArr = edgesArr.filter(e =>
+      (now - e.last_seen) <= maxAgeSecs && e.strength >= minStr
+    );
+    // Keep only nodes that have at least one visible edge (self always shown)
+    const visIds = new Set(["self"]);
+    for (const e of edgesArr) { visIds.add(e.a); visIds.add(e.b); }
+    const filteredNodes = nodesArr.filter(n => visIds.has(n.id));
 
     // Degree & strength for visual scaling
     _degree = new Map();
@@ -3107,6 +3201,7 @@
     // ── Nodes — carry sim position across data refreshes ─────────────────
     const prevMap = new Map(_gSimNodes.map(n => [n.id, n]));
     const { W, H } = graphContainerDims();
+    // Iterate ALL nodes (not just filtered) so positions are maintained even when hidden
     for (const n of nodesArr) {
       const prev = prevMap.get(n.id);
       if (prev) {
@@ -3123,7 +3218,7 @@
         }
       }
     }
-    _gSimNodes = nodesArr;
+    _gSimNodes = filteredNodes;
 
     const nodeBind = graphG.select(".gnodes").selectAll("g.gnode")
       .data(_gSimNodes, d => d.id);
@@ -3215,7 +3310,13 @@
     }
 
     const countEl = document.getElementById("graph-node-count");
-    if (countEl) countEl.textContent = `${nodesArr.length} nodes · ${edgesArr.length} links`;
+    if (countEl) {
+      const totalN = graphNodes.size, totalE = graphEdges.size;
+      const fN = filteredNodes.length, fE = edgesArr.length;
+      countEl.textContent = fN < totalN || fE < totalE
+        ? `${fN}/${totalN} nodes · ${fE}/${totalE} links`
+        : `${totalN} nodes · ${totalE} links`;
+    }
   }
 
   // ── SVG init ─────────────────────────────────────────────────────────────
