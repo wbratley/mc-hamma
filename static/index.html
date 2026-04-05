@@ -857,6 +857,30 @@
       flex-shrink: 0;
     }
 
+    /* ── Read marker ── */
+    .read-marker {
+      display: flex; align-items: center; gap: 10px;
+      flex-shrink: 0;
+      color: var(--accent); font-size: 11px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.06em; pointer-events: none;
+    }
+    .read-marker::before, .read-marker::after {
+      content: ''; flex: 1; height: 1px; background: var(--accent); opacity: 0.5;
+    }
+
+    /* ── Scroll-to-bottom button ── */
+    #scroll-bottom-btn {
+      position: absolute; bottom: 72px; right: 16px;
+      width: 34px; height: 34px; border-radius: 50%;
+      background: var(--surface); border: 1px solid var(--border);
+      color: var(--text); cursor: pointer;
+      display: none; align-items: center; justify-content: center;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.45); z-index: 10;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    #scroll-bottom-btn.visible { display: flex; }
+    #scroll-bottom-btn:hover { background: var(--surface2); border-color: var(--accent); color: var(--accent); }
+
     #msg-input {
       flex: 1;
       background: var(--surface2);
@@ -967,8 +991,11 @@
   </div>
 </header>
 
-<div id="page-chat" class="page active">
+<div id="page-chat" class="page active" style="position:relative">
   <div id="messages"></div>
+  <button id="scroll-bottom-btn" aria-label="Scroll to bottom">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+  </button>
   <div id="reply-banner" style="display:none">
     <span id="reply-label"></span>
     <button id="reply-dismiss" aria-label="Dismiss">✕</button>
@@ -1201,9 +1228,20 @@
   let currentIdx = null;
   const seenIds  = new Set();
   let atBottom   = true;
+  const scrollBottomBtn = document.getElementById("scroll-bottom-btn");
 
   messagesEl.addEventListener("scroll", () => {
     atBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 60;
+    scrollBottomBtn.classList.toggle("visible", !atBottom);
+    // Remove the read marker once the user scrolls to the bottom
+    if (atBottom) {
+      const marker = messagesEl.querySelector(".read-marker");
+      if (marker) marker.remove();
+    }
+  });
+
+  scrollBottomBtn.addEventListener("click", () => {
+    messagesEl.scrollTo({ top: messagesEl.scrollHeight, behavior: "smooth" });
   });
 
   function getOrCreateChannel(idx, name) {
@@ -1277,6 +1315,8 @@
   function selectChannel(idx) {
     currentIdx = idx;
     const ch = channels.get(idx);
+    // Capture the read position BEFORE marking everything read
+    const lastReadId = ch ? getLastReadId("ch_" + idx) : null;
     if (ch) {
       ch.unread = 0;
       setLastReadId("ch_" + idx, maxMsgId(ch.messages));
@@ -1287,7 +1327,7 @@
     updateChannelBtn();
     renderDropdown();
     updateBtnBadge();
-    renderMessages();
+    renderMessages(lastReadId);
     updateCompose();
     // Always switch back to the chat page
     document.querySelectorAll(".page").forEach(p => p.classList.remove("active"));
@@ -1298,7 +1338,7 @@
   }
 
   // ── Render all messages for the selected channel ─────────────────────────
-  function renderMessages() {
+  function renderMessages(lastReadId = null) {
     messagesEl.innerHTML = "";
 
     if (currentIdx === null) {
@@ -1312,8 +1352,19 @@
       return;
     }
 
+    // Determine if there are truly unread messages to mark
+    const hasUnread = lastReadId != null && ch.messages.some(m => (m.id || 0) > lastReadId);
+    let markerEl = null;
+
     let lastDate = null;
     for (const msg of ch.messages) {
+      // Insert read marker just before the first unread message
+      if (hasUnread && markerEl === null && (msg.id || 0) > lastReadId) {
+        markerEl = document.createElement("div");
+        markerEl.className = "read-marker";
+        markerEl.textContent = "New messages";
+        messagesEl.appendChild(markerEl);
+      }
       const dl = fmtDate(msg.timestamp);
       if (dl !== lastDate) {
         lastDate = dl;
@@ -1324,7 +1375,15 @@
       }
       messagesEl.appendChild(buildBubble(msg));
     }
-    messagesEl.scrollTop = messagesEl.scrollHeight;
+
+    if (markerEl) {
+      // Scroll so the marker is at the top, revealing new messages below
+      requestAnimationFrame(() => {
+        messagesEl.scrollTop = markerEl.offsetTop - 8;
+      });
+    } else {
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
   }
 
   function makeEmpty(text) {
@@ -1545,6 +1604,7 @@
 
     const ch = getOrCreateChannel(msg.channel_idx, msg.channel_name);
     ch.messages.push(msg);
+    if (ch.messages.length > 1000) ch.messages.splice(0, ch.messages.length - 1000);
 
     if (msg.channel_idx === currentIdx) {
       // Append to live view
@@ -1627,6 +1687,14 @@
       document.getElementById("page-" + page).classList.add("active");
       navMenu.querySelectorAll(".nav-item").forEach(b => b.classList.remove("active"));
       btn.classList.add("active");
+      if (page === "chat") {
+        // Scroll to read marker if present, otherwise go to bottom
+        const marker = messagesEl.querySelector(".read-marker");
+        requestAnimationFrame(() => {
+          if (marker) messagesEl.scrollTop = marker.offsetTop - 8;
+          else messagesEl.scrollTop = messagesEl.scrollHeight;
+        });
+      }
       if (page === "chats") renderChatsList();
       if (page === "contacts") renderContacts();
       if (page === "pending") renderPending();
