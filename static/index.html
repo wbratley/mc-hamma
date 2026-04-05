@@ -534,20 +534,32 @@
     .gnode.just-appeared > circle.graph-node-circle {
       animation: nodeAppear 0.5s cubic-bezier(.17,.89,.32,1.28) forwards, nodeGlow 1.6s ease-in-out 0.5s infinite;
     }
-    /* ── Graph message toast ── */
+    /* ── Graph message info panel ── */
     #graph-toast {
-      position: absolute; bottom: 16px; right: 16px; z-index: 10;
+      position: absolute; bottom: 16px; left: 16px; z-index: 10;
       background: var(--surface); border: 1px solid var(--border);
       border-left: 3px solid var(--accent);
       border-radius: 8px; padding: 10px 14px; font-size: 12px;
-      max-width: 260px; box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+      max-width: 280px; box-shadow: 0 4px 16px rgba(0,0,0,0.5);
       opacity: 0; transform: translateY(8px);
       transition: opacity 0.2s, transform 0.2s;
       pointer-events: none; line-height: 1.5;
     }
     #graph-toast.visible { opacity: 1; transform: translateY(0); pointer-events: auto; }
-    #graph-toast .toast-sender { font-weight: 600; color: var(--accent); margin-bottom: 2px; }
+    #graph-toast .toast-header {
+      display: flex; align-items: center; gap: 8px; margin-bottom: 3px;
+    }
+    #graph-toast .toast-sender { font-weight: 600; color: var(--accent); flex: 1; }
+    #graph-toast .toast-hops {
+      font-size: 10px; color: var(--text-muted); white-space: nowrap;
+      background: var(--surface2); border-radius: 4px; padding: 1px 5px;
+    }
     #graph-toast .toast-text { color: var(--text); word-break: break-word; }
+    /* ── Highlighted sender node (from "show on map" / incoming message) ── */
+    .gnode.is-highlighted > circle.graph-node-circle {
+      stroke: #4f8ef7 !important; stroke-width: 4 !important;
+      filter: drop-shadow(0 0 8px rgba(79,142,247,0.9));
+    }
     .graph-legend {
       display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
       font-size: 11px; color: var(--text-muted);
@@ -683,13 +695,13 @@
     .hop-badge {
       font-size: 10px;
       font-weight: 400;
-      color: var(--text-secondary);
+      color: var(--accent);
       margin-left: 5px;
       cursor: pointer;
       user-select: none;
       vertical-align: middle;
     }
-    .hop-badge:hover { color: var(--accent); }
+    .hop-badge:hover { color: var(--text); }
 
     .direct-badge {
       font-size: 10px;
@@ -704,16 +716,16 @@
       white-space: nowrap;
     }
 
-    .sender-map-link {
+    .sender-map-btn {
       display: inline-flex;
       align-items: center;
       color: var(--accent);
       margin-left: 5px;
       vertical-align: middle;
-      text-decoration: none;
-      opacity: 0.75;
+      background: none; border: none; padding: 0;
+      cursor: pointer; opacity: 0.75;
     }
-    .sender-map-link:hover { opacity: 1; }
+    .sender-map-btn:hover { opacity: 1; }
 
     .hop-popup {
       position: fixed;
@@ -1160,7 +1172,10 @@
     <div id="graph-map" class="hidden"></div>
     <svg id="graph-svg"></svg>
     <div id="graph-toast">
-      <div class="toast-sender"></div>
+      <div class="toast-header">
+        <div class="toast-sender"></div>
+        <div class="toast-hops"></div>
+      </div>
       <div class="toast-text"></div>
     </div>
   </div>
@@ -1529,35 +1544,35 @@
     senderDiv.appendChild(senderName);
 
     if (!msg.own) {
-      if (msg.hops > 0 && msg.path && msg.path.length > 0) {
+      const hasPath = msg.hops > 0 && msg.path && msg.path.length > 0;
+      const hasLoc  = msg.sender_lat != null && msg.sender_lon != null &&
+                      !(msg.sender_lat === 0 && msg.sender_lon === 0);
+
+      if (hasPath) {
         const badge = document.createElement("span");
         badge.className = "hop-badge";
         badge.textContent = `${msg.hops} hop${msg.hops !== 1 ? "s" : ""}`;
-        badge.title = "Click to see relay path";
-        badge.addEventListener("click", (e) => {
-          e.stopPropagation();
-          showHopPopup(e, msg.path);
-        });
+        badge.title = "Show route on map";
+        badge.addEventListener("click", (e) => { e.stopPropagation(); showOnMap(msg); });
         senderDiv.appendChild(badge);
       } else {
         // Direct (no relay hops) — show indicator + SNR
         const direct = document.createElement("span");
         direct.className = "direct-badge";
-        direct.textContent = "📡 direct" + (msg.snr != null ? ` · ${msg.snr} dB` : "");
+        direct.textContent = "direct" + (msg.snr != null ? ` · ${msg.snr} dB` : "");
         senderDiv.appendChild(direct);
       }
 
-      // Map link if sender location is known
-      if (msg.sender_lat != null && msg.sender_lon != null &&
-          (msg.sender_lat !== 0 || msg.sender_lon !== 0)) {
-        const mapLink = document.createElement("a");
-        mapLink.className = "sender-map-link";
-        mapLink.href = `https://www.google.com/maps?q=${msg.sender_lat},${msg.sender_lon}`;
-        mapLink.target = "_blank";
-        mapLink.rel = "noopener";
-        mapLink.title = `${msg.sender_lat.toFixed(4)}, ${msg.sender_lon.toFixed(4)}`;
-        mapLink.innerHTML = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>`;
-        senderDiv.appendChild(mapLink);
+      // Show-on-map button: visible for hops (extra context) or when location is known
+      if (hasPath || hasLoc) {
+        const mapBtn = document.createElement("button");
+        mapBtn.className = "sender-map-btn";
+        mapBtn.title = hasLoc
+          ? `${msg.sender_lat.toFixed(4)}, ${msg.sender_lon.toFixed(4)} — show on map`
+          : "Show route on map";
+        mapBtn.innerHTML = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>`;
+        mapBtn.addEventListener("click", (e) => { e.stopPropagation(); showOnMap(msg); });
+        senderDiv.appendChild(mapBtn);
       }
     }
 
@@ -1637,12 +1652,12 @@
     // Update btn badge indicator: show total unread across non-selected channels
     updateBtnBadge();
 
-    // Graph path animation + toast (always — graph tracks all channels)
-    if (graphInited) {
+    // Graph route highlight + persistent info panel (always, even if graph not open yet)
+    if (!msg.own) {
+      _lastHighlightedMsg = msg;
       const pathHashes = (msg.path || []).map(h => (typeof h === "object" ? h.hash : h));
-      highlightMessageRoute(msg.sender_hash || "", pathHashes);
-      // Show toast if graph page is open OR any time (shows overlay on graph page)
-      if (_graphPageOpen) showGraphToast(msg.sender, msg.text, msg.hops || 0);
+      if (graphInited) highlightMessageRoute(msg.sender_hash || "", pathHashes);
+      showGraphInfo(msg.sender, msg.text, msg.hops || 0);
     }
   }
 
@@ -1703,9 +1718,13 @@
         _graphPageOpen = true;
         // Double RAF: first frame applies display:flex, second has correct layout
         requestAnimationFrame(() => requestAnimationFrame(() => {
-          if (!graphInited) initGraphSvg();
-          else updateGraphViz();
-          markGraphNodesRead(); // mark all currently-visible nodes as read
+          if (!graphInited) {
+            initGraphSvg();
+            setGraphMapMode(true); // default to map on first open
+          } else {
+            updateGraphViz();
+          }
+          markGraphNodesRead();
         }));
       }
       if (page === "nodes") renderNodes();
@@ -2419,27 +2438,30 @@
     }
   }
 
-  // ── Graph message toast ──────────────────────────────────────────────────
-  let _toastTimer = null;
-  function showGraphToast(sender, text, pathLen) {
+  // ── Graph message info panel ─────────────────────────────────────────────
+  // Persistent — stays until the next message arrives (no auto-dismiss).
+  function showGraphInfo(sender, text, pathLen) {
     const el = document.getElementById("graph-toast");
     if (!el) return;
     el.querySelector(".toast-sender").textContent = sender;
-    const hops = pathLen > 0 ? ` · ${pathLen} hop${pathLen !== 1 ? "s" : ""}` : " · direct";
-    el.querySelector(".toast-text").textContent = text.length > 80 ? text.slice(0, 80) + "…" : text;
-    el.title = `${pathLen} hop${pathLen !== 1 ? "s" : ""}`;
+    el.querySelector(".toast-hops").textContent =
+      pathLen > 0 ? `${pathLen} hop${pathLen !== 1 ? "s" : ""}` : "direct";
+    el.querySelector(".toast-text").textContent = text.length > 100 ? text.slice(0, 100) + "…" : text;
     el.classList.add("visible");
-    clearTimeout(_toastTimer);
-    _toastTimer = setTimeout(() => el.classList.remove("visible"), 5000);
-    el.onclick = () => { el.classList.remove("visible"); clearTimeout(_toastTimer); };
   }
 
 
-  let _routeLinkKeys = new Set();
+  let _routeLinkKeys     = new Set();
+  let _highlightNodeId   = null;   // sender node to highlight in graph
+  let _messagePin        = null;   // Leaflet marker for sender location
+  let _lastHighlightedMsg = null;  // last msg passed to showOnMap / processMessage
 
   function clearRouteHighlight() {
     if (_gLinkSel) _gLinkSel.classed("link-route", false);
     _routeLinkKeys.clear();
+    _highlightNodeId = null;
+    if (_messagePin) { _messagePin.remove(); _messagePin = null; }
+    if (_gNodeSel) _gNodeSel.classed("is-highlighted", false);
   }
 
   function highlightMessageRoute(senderHash, pathHops) {
@@ -2447,24 +2469,120 @@
     if (senderHash) chain.push(senderHash);
     for (const h of pathHops) { if (h) chain.push(h); }
     chain.push("self");
-    if (chain.length < 2 || !graphG) return;
+    if (chain.length < 2) return;
 
     clearRouteHighlight();
+    _highlightNodeId = senderHash || null;
 
+    // Synthesize any missing nodes/edges so the highlight is always contiguous.
+    // These placeholders are overwritten when the real graph_snapshot arrives.
+    let graphDirty = false;
     for (let i = 0; i < chain.length - 1; i++) {
       const srcId = chain[i];
       const dstId = chain[i + 1];
       const a = srcId < dstId ? srcId : dstId;
       const b = srcId < dstId ? dstId : srcId;
       _routeLinkKeys.add(`${a}:${b}`);
+      if (!graphEdges.has(`${a}:${b}`)) {
+        graphEdges.set(`${a}:${b}`, { a, b, count: 0, strength: 0.5, last_seen: Date.now() / 1000 });
+        graphDirty = true;
+      }
+      for (const h of [srcId, dstId]) {
+        if (!graphNodes.has(h)) {
+          graphNodes.set(h, { id: h, name: h === "self" ? "You" : h.slice(0, 8),
+            node_type: null, is_self: h === "self", lat: null, lon: null });
+          graphDirty = true;
+        }
+      }
     }
 
-    _applyRouteHighlight();
+    if (graphDirty && graphInited) updateGraphViz();
+    else { _applyRouteHighlight(); _applyNodeHighlight(); }
   }
 
   function _applyRouteHighlight() {
     if (!_gLinkSel || !_routeLinkKeys.size) return;
     _gLinkSel.classed("link-route", d => _routeLinkKeys.has(`${d.a}:${d.b}`));
+  }
+
+  function _applyNodeHighlight() {
+    if (!_gNodeSel) return;
+    _gNodeSel.classed("is-highlighted", d => d.id === _highlightNodeId);
+  }
+
+  // ── Sender location marker on Leaflet map ─────────────────────────────────
+  function updateSenderMarker(msg) {
+    if (_messagePin) { _messagePin.remove(); _messagePin = null; }
+    if (!_leafletMap || !window.L) return;
+
+    const senderHash  = msg.sender_hash || "";
+    const pathHashes  = (msg.path || []).map(h => (typeof h === "object" ? h.hash : h));
+
+    // 1) Exact location from message payload
+    let lat = null, lon = null, exact = false;
+    if (msg.sender_lat != null && msg.sender_lon != null &&
+        !(msg.sender_lat === 0 && msg.sender_lon === 0)) {
+      lat = msg.sender_lat; lon = msg.sender_lon; exact = true;
+    }
+
+    // 2) Exact location from graph node record
+    if (lat == null) {
+      const node = graphNodes.get(senderHash);
+      if (node?.lat != null && node?.lon != null) {
+        lat = node.lat; lon = node.lon; exact = true;
+      }
+    }
+
+    // 3) Estimated: use first hop's known location
+    if (lat == null && pathHashes.length > 0) {
+      for (const h of pathHashes) {
+        const hop = graphNodes.get(h);
+        if (hop?.lat != null && hop?.lon != null) {
+          lat = hop.lat; lon = hop.lon; exact = false;
+          break;
+        }
+      }
+    }
+
+    if (lat == null) return;
+
+    _messagePin = L.circleMarker([lat, lon], {
+      radius:      exact ? 10 : 8,
+      color:       exact ? "#4f8ef7" : "#7b82a8",
+      fillColor:   exact ? "#4f8ef7" : "#7b82a8",
+      fillOpacity: exact ? 0.25 : 0.1,
+      weight:      2,
+      dashArray:   exact ? null : "5 4",
+    }).bindTooltip(
+      `${msg.sender}${exact ? "" : " (estimated location)"}`,
+      { permanent: true, direction: "top", offset: [0, -10] }
+    ).addTo(_leafletMap);
+  }
+
+  // ── Navigate to map and highlight a message's route ───────────────────────
+  function showOnMap(msg) {
+    // Switch to graph page
+    document.querySelectorAll(".page").forEach(p => p.classList.remove("active"));
+    document.getElementById("page-graph").classList.add("active");
+    navMenu.querySelectorAll(".nav-item").forEach(b => b.classList.remove("active"));
+    const graphNavBtn = document.querySelector(".nav-item[data-page='graph']");
+    if (graphNavBtn) graphNavBtn.classList.add("active");
+    navMenu.classList.remove("open");
+    _graphPageOpen = true;
+
+    const pathHashes = (msg.path || []).map(h => (typeof h === "object" ? h.hash : h));
+    const senderHash = msg.sender_hash || "";
+
+    _lastHighlightedMsg = msg;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (!graphInited) initGraphSvg();
+      else updateGraphViz();
+      setGraphMapMode(true);
+      highlightMessageRoute(senderHash, pathHashes);
+      updateSenderMarker(msg);
+      showGraphInfo(msg.sender, msg.text, msg.hops || 0);
+      markGraphNodesRead();
+    }));
   }
 
   // Force-mode state
@@ -2557,6 +2675,8 @@
     // the map is moving and does one final render when motion ends.
     _leafletMap.on("movestart zoomstart", () => { if (_mapMode) _startMapRaf(); });
     _leafletMap.on("moveend zoomend",     () => { if (_mapMode) { _stopMapRaf(); renderGraphPositions(); } });
+    // Re-apply any pending message pin (message may have arrived before map was init'd)
+    if (_lastHighlightedMsg) updateSenderMarker(_lastHighlightedMsg);
   }
 
   // ── Map-mode position engine ─────────────────────────────────────────────
@@ -2714,7 +2834,6 @@
           `Observations: ${d.count}\nStrength: ${d.strength.toFixed(2)}\nLast seen: ${fmtAgo(d.last_seen)}`));
     linkUpd.exit().remove();
     _gLinkSel = graphG.select(".links").selectAll("line.graph-link");
-    _applyRouteHighlight(); // restore highlight after DOM rebind
 
     // ── Nodes — carry sim position across data refreshes ─────────────────
     const prevMap = new Map(_gSimNodes.map(n => [n.id, n]));
@@ -2789,8 +2908,10 @@
     nodeBind.exit().remove();
     _gNodeSel = graphG.select(".gnodes").selectAll("g.gnode");
 
-    // Apply new-node highlight class (persists until markGraphNodesRead is called)
-    _gNodeSel.classed("is-new", d => _graphNewNodes.has(d.id));
+    // Apply persistent highlight classes
+    _gNodeSel.classed("is-new",        d => _graphNewNodes.has(d.id));
+    _applyNodeHighlight();
+    _applyRouteHighlight();
 
     // ── Drive simulation (force mode) or render directly (map mode) ───────
     if (!_mapMode) {
@@ -2834,7 +2955,13 @@
       .on("tick", graphTick);
 
     graphInited = true;
-    updateGraphViz();
+    // Catch up: apply any route highlight that arrived before the graph was opened
+    if (_lastHighlightedMsg && _routeLinkKeys.size === 0) {
+      const pathHashes = (_lastHighlightedMsg.path || []).map(h => (typeof h === "object" ? h.hash : h));
+      highlightMessageRoute(_lastHighlightedMsg.sender_hash || "", pathHashes);
+    } else {
+      updateGraphViz();
+    }
   }
 
   // ── Map / force toggle ────────────────────────────────────────────────────
