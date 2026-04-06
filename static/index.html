@@ -286,13 +286,21 @@
       padding: 10px 14px; background: var(--surface);
       border-bottom: 1px solid var(--border); flex-shrink: 0;
     }
-    #contacts-toolbar select, #contacts-toolbar input {
+    #contacts-toolbar select, #contacts-toolbar input,
+    #rankings-toolbar select, #rankings-toolbar input {
       background: var(--surface2); border: 1px solid var(--border);
       color: var(--text); border-radius: 6px; padding: 5px 8px;
       font-size: 12px; outline: none;
     }
-    #contacts-toolbar select:focus, #contacts-toolbar input:focus { border-color: var(--accent); }
+    #contacts-toolbar select:focus, #contacts-toolbar input:focus,
+    #rankings-toolbar select:focus, #rankings-toolbar input:focus { border-color: var(--accent); }
     #contacts-toolbar label { font-size: 12px; color: var(--text-secondary); }
+    #rankings-toolbar {
+      display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+      padding: 10px 14px; background: var(--surface);
+      border-bottom: 1px solid var(--border); flex-shrink: 0;
+    }
+    #rankings-toolbar label { font-size: 12px; color: var(--text-secondary); }
     #contacts-mgmt {
       display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
       padding: 8px 14px; background: var(--surface2);
@@ -1353,6 +1361,25 @@
 </div>
 
 <div id="page-rankings" class="page">
+  <div id="rankings-toolbar">
+    <label>Max hops:
+      <select id="rankings-filter-hops">
+        <option value="">Any</option>
+        <option value="0">Direct (0)</option>
+        <option value="1">≤ 1</option>
+        <option value="2">≤ 2</option>
+        <option value="3">≤ 3</option>
+        <option value="5">≤ 5</option>
+      </select>
+    </label>
+    <label>Show:
+      <select id="rankings-filter-type">
+        <option value="">Relays &amp; nodes</option>
+        <option value="relay">Relays only</option>
+        <option value="all">All (incl. clients)</option>
+      </select>
+    </label>
+  </div>
   <div id="rankings-content" style="display:flex;flex-direction:column;gap:20px;padding:16px;overflow-y:auto;flex:1;min-height:0">
     <p id="rankings-empty" style="color:var(--text-muted);font-size:14px;text-align:center;margin-top:40px">No path data yet — rankings appear once messages are received.</p>
   </div>
@@ -2162,12 +2189,26 @@
       return;
     }
 
+    // Read filter controls
+    const hopsFiltEl = document.getElementById("rankings-filter-hops");
+    const typeFiltEl = document.getElementById("rankings-filter-type");
+    const maxHopsFilter = hopsFiltEl && hopsFiltEl.value !== "" ? parseInt(hopsFiltEl.value) : null;
+    const typeFilter    = typeFiltEl ? typeFiltEl.value : "";
+
+    // Build nodeHops: hash → min hops seen (from nodeShortestPath, keyed by senderHash)
+    const nodeHops = new Map(); // hash → min hops
+    for (const r of nodeShortestPath.values()) {
+      if (!r.senderHash || r.senderHash === "self") continue;
+      const existing = nodeHops.get(r.senderHash);
+      if (existing === undefined || r.hops < existing) nodeHops.set(r.senderHash, r.hops);
+    }
+
     // All rankings derive from graphEdges so they match the graph exactly.
     // Each edge has: { a, b, count (total path observations), strength, last_seen }
     const now6h = Date.now() / 1000 - 6 * 3600;
 
     // Per-node aggregates
-    const nodeAgg = new Map(); // hash → { hash, name, totalObs, links, totalStrength, recentObs, recentLinks }
+    const nodeAgg = new Map(); // hash → { hash, name, totalObs, links, totalStrength, recentObs, recentLinks, minHops }
     for (const e of graphEdges.values()) {
       for (const h of [e.a, e.b]) {
         if (h === "self") continue;
@@ -2182,6 +2223,7 @@
             totalStrength: 0,
             recentObs: 0,  // count of edges active in last 6h
             recentLinks: 0,
+            minHops: nodeHops.has(h) ? nodeHops.get(h) : null,
           });
         }
         const rec = nodeAgg.get(h);
@@ -2195,9 +2237,22 @@
       }
     }
 
-    // Exclude confirmed non-relaying clients (node_type 0).
-    // Include repeaters (1), room-servers (2), gateways (3), and unknowns (null).
-    const aggArr = [...nodeAgg.values()].filter(r => r.node_type !== 0);
+    // Type filter: by default exclude confirmed non-relaying clients (node_type 0).
+    // "relay" = only repeaters/room-servers/gateways; "all" = include clients too.
+    let aggArr;
+    if (typeFilter === "all") {
+      aggArr = [...nodeAgg.values()];
+    } else if (typeFilter === "relay") {
+      aggArr = [...nodeAgg.values()].filter(r => r.node_type === 1 || r.node_type === 2 || r.node_type === 3);
+    } else {
+      // default: exclude confirmed clients (node_type 0)
+      aggArr = [...nodeAgg.values()].filter(r => r.node_type !== 0);
+    }
+
+    // Hop distance filter — only keep nodes with known hop distance within threshold
+    if (maxHopsFilter !== null) {
+      aggArr = aggArr.filter(r => r.minHops !== null && r.minHops <= maxHopsFilter);
+    }
 
     if (aggArr.length === 0) {
       el.innerHTML = '<p id="rankings-empty" style="color:var(--text-muted);font-size:14px;text-align:center;margin-top:40px">No repeater/relay data yet.</p>';
@@ -2234,8 +2289,11 @@
     }
 
     // ── Nearest neighbors (fewest hops ever seen per sender) ────────────────
-    const topNearest = [...nodeShortestPath.values()]
-      .filter(r => r.senderHash && r.senderHash !== "self")
+    let topNearest = [...nodeShortestPath.values()]
+      .filter(r => r.senderHash && r.senderHash !== "self");
+    if (maxHopsFilter !== null)
+      topNearest = topNearest.filter(r => r.hops <= maxHopsFilter);
+    topNearest = topNearest
       .sort((a, b) => a.hops - b.hops || a.senderHash.localeCompare(b.senderHash))
       .slice(0, 10);
 
@@ -2243,7 +2301,7 @@
 
     if (topNearest.length > 0) {
       sections.push(`<div>
-        <div class="rank-section-title">Nearest neighbors (fewest hops seen)</div>
+        <div class="rank-section-title">Nearest nodes (fewest hops seen)</div>
         ${buildTable(topNearest, [
           { label: "#",     cls: "rank-num",   fn: (r, i) => i + 1 },
           { label: "Node",  cls: "rank-name",  fn: r => r.sender },
@@ -2254,11 +2312,17 @@
       </div>`);
     }
 
+    function hopsCell(r) {
+      if (r.minHops === null) return '<span style="color:var(--text-muted)">?</span>';
+      return r.minHops === 0 ? "direct" : r.minHops;
+    }
+
     sections.push(`<div>
       <div class="rank-section-title">Top relays by path observations</div>
       ${buildTable(topObs, [
         { label: "#",           cls: "rank-num",   fn: (r, i) => i + 1 },
         { label: "Node",        cls: "rank-name",  fn: r => r.name + typeBadge(r.node_type) },
+        { label: "Hops",        cls: "rank-strength", fn: r => hopsCell(r) },
         { label: "Total obs",   cls: "rank-count", fn: r => r.totalObs },
         { label: "Links",       cls: "rank-strength", fn: r => r.links },
         { label: "",            cls: "",           fn: r => mapBtn(r.hash) },
@@ -2270,6 +2334,7 @@
       ${buildTable(topLinks, [
         { label: "#",           cls: "rank-num",   fn: (r, i) => i + 1 },
         { label: "Node",        cls: "rank-name",  fn: r => r.name + typeBadge(r.node_type) },
+        { label: "Hops",        cls: "rank-strength", fn: r => hopsCell(r) },
         { label: "Links",       cls: "rank-count", fn: r => r.links },
         { label: "Active (6h)", cls: "rank-strength", fn: r => r.recentLinks },
         { label: "",            cls: "",           fn: r => mapBtn(r.hash) },
@@ -2281,6 +2346,7 @@
       ${buildTable(topStrength, [
         { label: "#",           cls: "rank-num",   fn: (r, i) => i + 1 },
         { label: "Node",        cls: "rank-name",  fn: r => r.name + typeBadge(r.node_type) },
+        { label: "Hops",        cls: "rank-strength", fn: r => hopsCell(r) },
         { label: "Strength",    cls: "rank-count", fn: r => r.totalStrength.toFixed(2) },
         { label: "Total obs",   cls: "rank-strength", fn: r => r.totalObs },
         { label: "",            cls: "",           fn: r => mapBtn(r.hash) },
@@ -2576,6 +2642,13 @@
   [sortSelect, filterType, filterHops, filterSeen, filterChat].forEach(el =>
     el.addEventListener("change", renderContacts)
   );
+
+  // Rankings filter controls
+  const rankingsFilterHops = document.getElementById("rankings-filter-hops");
+  const rankingsFilterType = document.getElementById("rankings-filter-type");
+  [rankingsFilterHops, rankingsFilterType].forEach(el => {
+    if (el) el.addEventListener("change", renderRankings);
+  });
 
   function sendSmartAddConfig() {
     if (!ws || !wsConnected) return;
