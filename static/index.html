@@ -1375,9 +1375,10 @@
     "#bb86fc", "#56ccf2", "#f2994a", "#eb5757",
   ];
 
-  function senderColour(name) {
+  function senderColour(name, key) {
+    const src = key || name;
     let h = 0;
-    for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+    for (let i = 0; i < src.length; i++) h = (h * 31 + src.charCodeAt(i)) >>> 0;
     return COLOURS[h % COLOURS.length];
   }
 
@@ -1730,7 +1731,7 @@
 
     const senderName = document.createElement("span");
     senderName.textContent = msg.sender;
-    senderName.style.color = senderColour(msg.sender);
+    senderName.style.color = senderColour(msg.sender, msg.sender_hash);
     senderDiv.appendChild(senderName);
 
     if (!msg.own && msg.sender_hash) {
@@ -2397,7 +2398,7 @@
 
       const avatar = document.createElement("div");
       avatar.className = "contact-avatar";
-      avatar.style.cssText = `width:32px;height:32px;font-size:13px;color:${senderColour(c.name)}`;
+      avatar.style.cssText = `width:32px;height:32px;font-size:13px;color:${senderColour(c.name, c.pubkey)}`;
       avatar.textContent = c.name.charAt(0).toUpperCase();
       card.appendChild(avatar);
 
@@ -2498,7 +2499,7 @@
 
       const avatar = document.createElement("div");
       avatar.className = "contact-avatar";
-      avatar.style.color = senderColour(c.name);
+      avatar.style.color = senderColour(c.name, c.key);
       avatar.textContent = (c.name || "?").charAt(0).toUpperCase();
       card.appendChild(avatar);
 
@@ -2680,7 +2681,7 @@
 
       const avatar = document.createElement("div");
       avatar.className = "chat-avatar";
-      avatar.style.color = senderColour(chat.name);
+      avatar.style.color = senderColour(chat.name, key);
       avatar.textContent = chat.name.charAt(0).toUpperCase();
       item.appendChild(avatar);
 
@@ -2759,7 +2760,7 @@
       senderDiv.className = "sender";
       const senderName = document.createElement("span");
       senderName.textContent = msg.sender;
-      senderName.style.color = senderColour(msg.sender);
+      senderName.style.color = senderColour(msg.sender, msg.contact_key);
       senderDiv.appendChild(senderName);
       if (msg.contact_key) {
         const pkPrev = document.createElement("span");
