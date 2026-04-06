@@ -508,18 +508,21 @@
       z-index: 999; pointer-events: none; box-shadow: 0 4px 16px rgba(0,0,0,0.5);
       max-width: 200px; line-height: 1.6;
     }
-    /* ── Route highlight (persistent orange dashes on last message path) ── */
+    /* ── Route highlight (persistent green dashes on last message path) ── */
     @keyframes routeFlow    { to { stroke-dashoffset: -24; } }
     @keyframes routeFlowRev { to { stroke-dashoffset:  24; } }
+    @keyframes routeGlow {
+      0%, 100% { filter: drop-shadow(0 0 3px rgba(0,255,120,0.5)); }
+      50%       { filter: drop-shadow(0 0 12px rgba(0,255,120,1.0)) drop-shadow(0 0 24px rgba(0,255,120,0.4)); }
+    }
     .graph-link.link-route {
-      stroke: #ff9a3c !important;
+      stroke: #00ff88 !important;
       stroke-width: 4 !important;
       stroke-dasharray: 10 6;
-      animation: routeFlow 0.7s linear infinite;
-      filter: drop-shadow(0 0 5px rgba(255,154,60,0.65));
+      animation: routeFlow 0.7s linear infinite, routeGlow 1.4s ease-in-out infinite;
     }
     /* edges where the message flowed against canonical (a→b) direction */
-    .graph-link.link-route.link-route-rev { animation-name: routeFlowRev; }
+    .graph-link.link-route.link-route-rev { animation-name: routeFlowRev, routeGlow; }
     /* ── New node animations ── */
     @keyframes nodeAppear {
       0%   { opacity: 0; r: 0; }
@@ -3199,6 +3202,8 @@
   // Per-node cached degree (rebuilt in updateGraphViz, used in renderGraphPositions)
   let _degree = new Map();
   let _maxDeg = 1;
+  let _maxStr = 1;
+  let _zoomK  = 1;
 
   const NODE_COLORS = {
     self:     "#4f8ef7",
@@ -3252,7 +3257,7 @@
     // _startMapRaf() handles this; here we just make sure it's running whenever
     // the map is moving and does one final render when motion ends.
     _leafletMap.on("movestart zoomstart", () => { if (_mapMode) _startMapRaf(); });
-    _leafletMap.on("moveend zoomend",     () => { if (_mapMode) { _stopMapRaf(); renderGraphPositions(); } });
+    _leafletMap.on("moveend zoomend",     () => { if (_mapMode) { _stopMapRaf(); renderGraphPositions(); _applyZoomVisuals(); } });
     // Re-apply any pending message pin (message may have arrived before map was init'd)
     if (_lastHighlightedMsg) updateSenderMarker(_lastHighlightedMsg);
   }
@@ -3387,6 +3392,31 @@
   document.addEventListener("click", () => { if (_tooltipPinned) hideGraphTooltip(); });
 
   // ── Main bind — called when graph data changes or page becomes active ────
+  // ── Zoom-responsive visuals ──────────────────────────────────────────────
+  // Scales node radii, label visibility, and line widths with current zoom.
+  function _applyZoomVisuals() {
+    if (!_gNodeSel || !_gLinkSel) return;
+    let k;
+    if (_mapMode && _leafletMap) {
+      // Leaflet zoom 12 → scale 1.0; halves every 2.5 zoom levels zooming out
+      k = Math.max(0.08, Math.min(1.5, Math.pow(2, (_leafletMap.getZoom() - 12) / 2.5)));
+    } else {
+      k = Math.max(0.08, _zoomK);
+    }
+    const vs = Math.min(k, 1); // cap at 1 — don't grow nodes beyond base size
+
+    _gNodeSel.select("circle.graph-node-circle")
+      .attr("r", d => (8 + 12*((_degree.get(d.id)||0)/_maxDeg)) * vs);
+
+    _gNodeSel.select("text.graph-node-label")
+      .attr("visibility", k < 0.55 ? "hidden" : "visible")
+      .attr("dy", d => -(10 + 12*((_degree.get(d.id)||0)/_maxDeg)) * vs);
+
+    // Only scale non-route links (route links have CSS !important stroke-width)
+    _gLinkSel.filter(function() { return !this.classList.contains("link-route"); })
+      .attr("stroke-width", d => (1 + 4*(d.strength/_maxStr)) * vs);
+  }
+
   function updateGraphViz() {
     if (!graphInited || !graphG) return;
 
@@ -3414,6 +3444,7 @@
     }
     _maxDeg = Math.max(..._degree.values(), 1);
     const maxStr = Math.max(...edgesArr.map(e => e.strength), 1);
+    _maxStr = maxStr;
 
     // ── Links ────────────────────────────────────────────────────────────
     edgesArr.forEach(e => { e.source = e.a; e.target = e.b; });
@@ -3534,6 +3565,7 @@
     _gNodeSel.classed("is-new",        d => _graphNewNodes.has(d.id));
     _applyNodeHighlight();
     _applyRouteHighlight();
+    _applyZoomVisuals();
 
     // ── Drive simulation (force mode) or render directly (map mode) ───────
     if (!_mapMode) {
@@ -3564,7 +3596,11 @@
     svg.selectAll("*").remove();
 
     const zoom = d3.zoom().scaleExtent([0.05, 10]).on("zoom", (e) => {
-      if (!_mapMode) graphG.attr("transform", e.transform);
+      if (!_mapMode) {
+        graphG.attr("transform", e.transform);
+        _zoomK = e.transform.k;
+        _applyZoomVisuals();
+      }
     });
     svg.call(zoom);
     svgEl.__d3zoom = zoom;
