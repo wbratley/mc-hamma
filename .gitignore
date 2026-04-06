@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# mc-hamma runtime data files (written by the running app, not tracked in git)
+chat_history.json
+dm_history/
+contact_stats.json
+smart_add_config.json
+
+# Local deployment config (serial port, host, port — edit from .env.example)
+deploy/mc-hamma.env

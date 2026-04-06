@@ -1,0 +1,33 @@
+[Unit]
+Description=mc-hamma MeshCore Web Viewer
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+
+WorkingDirectory=/home/pi/mc-hamma
+
+# Load serial port and other config (copy deploy/mc-hamma.env.example to deploy/mc-hamma.env)
+EnvironmentFile=/home/pi/mc-hamma/deploy/mc-hamma.env
+
+ExecStart=/home/pi/mc-hamma/.venv/bin/python server.py \
+    ${MC_SERIAL_PORT} \
+    --baud ${MC_BAUD_RATE} \
+    --host ${MC_HOST} \
+    --port ${MC_PORT}
+
+# Restart automatically on failure; clean exit (e.g. during update) does not trigger restart
+Restart=on-failure
+RestartSec=5
+
+# Give uvicorn time to drain WebSocket connections on SIGTERM
+TimeoutStopSec=15
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mc-hamma
+
+[Install]
+WantedBy=multi-user.target
