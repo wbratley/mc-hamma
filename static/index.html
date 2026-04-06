@@ -745,7 +745,6 @@
       display: flex;
       flex-direction: column;
       gap: 10px;
-      scroll-behavior: smooth;
     }
 
     #messages::-webkit-scrollbar { width: 6px; }
@@ -1565,14 +1564,16 @@
     }
 
     if (markerEl) {
-      // Scroll so the marker is at the top, revealing new messages below.
-      // markerEl.offsetTop is relative to offsetParent (#page-chat), so subtract
-      // messagesEl.offsetTop to get position within the scroll container.
+      // Scroll so the marker appears near the top of the visible area.
+      // Use scrollIntoView for reliable cross-browser behaviour — it only
+      // affects #messages because body/html both have overflow:hidden.
       requestAnimationFrame(() => {
-        messagesEl.scrollTop = markerEl.offsetTop - messagesEl.offsetTop - 8;
+        markerEl.scrollIntoView({ block: "start", behavior: "instant" });
+        // Nudge up slightly so the marker isn't flush with the edge.
+        messagesEl.scrollTop = Math.max(0, messagesEl.scrollTop - 8);
       });
     } else {
-      messagesEl.scrollTop = messagesEl.scrollHeight;
+      messagesEl.scrollTo({ top: messagesEl.scrollHeight, behavior: "instant" });
     }
   }
 
@@ -1831,7 +1832,7 @@
         messagesEl.appendChild(sep);
       }
       messagesEl.appendChild(buildBubble(msg));
-      if (atBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
+      if (atBottom) messagesEl.scrollTo({ top: messagesEl.scrollHeight, behavior: "instant" });
       // Mark this message as read immediately (we're looking at it)
       setLastReadId("ch_" + msg.channel_idx, msg.id);
     } else {
