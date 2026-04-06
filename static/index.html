@@ -554,6 +554,12 @@
     }
     #graph-toast .toast-hops:hover { color: var(--accent); background: var(--accent-dim); }
     #graph-toast .toast-text { color: var(--text); word-break: break-word; }
+    #graph-toast .toast-channel {
+      font-size: 10px; color: var(--text-muted); white-space: nowrap;
+      background: var(--surface2); border-radius: 4px; padding: 1px 5px;
+      cursor: pointer; user-select: none; margin-top: 4px; display: inline-block;
+    }
+    #graph-toast .toast-channel:hover { color: var(--accent); background: var(--accent-dim); }
     #graph-toast .toast-dismiss {
       background: none; border: none; color: var(--text-muted); cursor: pointer;
       font-size: 16px; line-height: 1; padding: 0 2px; border-radius: 4px;
@@ -1322,7 +1328,7 @@
       <span class="gf-val" id="graph-age-label">7d</span>
       <div class="gf-sep"></div>
       <span class="gf-label">Strength ≥</span>
-      <input type="range" class="gf-range" id="graph-str-slider" min="0" max="90" step="5" value="0">
+      <input type="range" class="gf-range" id="graph-str-slider" min="0" max="100" step="1" value="0">
       <span class="gf-val" id="graph-str-label">0%</span>
     </div>
   </div>
@@ -1336,6 +1342,7 @@
         <button class="toast-dismiss" id="graph-toast-dismiss" title="Clear selection">×</button>
       </div>
       <div class="toast-text"></div>
+      <div class="toast-channel" id="graph-toast-channel" style="display:none"></div>
     </div>
   </div>
 </div>
@@ -1843,6 +1850,11 @@
     if (dropdown.classList.contains("open")) renderDropdown();
     // Update btn badge indicator: show total unread across non-selected channels
     updateBtnBadge();
+
+    // Keep latest message timestamp up to date (used as reference for age filter)
+    if (msg.timestamp && msg.timestamp > _latestMsgTimestamp) {
+      _latestMsgTimestamp = msg.timestamp;
+    }
 
     // Track shortest path per sender node
     if (!msg.own && msg.sender_hash) {
@@ -2877,6 +2889,17 @@
     }
     el.querySelector(".toast-text").textContent =
       msg.text.length > 100 ? msg.text.slice(0, 100) + "…" : msg.text;
+    const chEl = document.getElementById("graph-toast-channel");
+    if (chEl) {
+      const chName = msg.channel_name || (msg.channel_idx != null ? `ch${msg.channel_idx}` : null);
+      if (chName != null) {
+        chEl.textContent = `# ${chName}`;
+        chEl.dataset.channelIdx = msg.channel_idx ?? "";
+        chEl.style.display = "";
+      } else {
+        chEl.style.display = "none";
+      }
+    }
     el.classList.add("visible");
     el.classList.toggle("locked", locked);
   }
@@ -2894,6 +2917,12 @@
     clearRouteHighlight(true);
   });
 
+  document.getElementById("graph-toast-channel").addEventListener("click", (e) => {
+    e.stopPropagation();
+    const idx = e.currentTarget.dataset.channelIdx;
+    if (idx !== "") selectChannel(+idx);
+  });
+
 
   let _routeLinkKeys    = new Set();
   let _routeLinkReverse = new Set(); // edge keys where message flowed b→a (reverse of canonical)
@@ -2901,6 +2930,7 @@
   let _messagePin       = null;   // Leaflet marker for sender location
   let _lastHighlightedMsg = null; // last msg passed to showOnMap / processMessage
   let _pathLocked       = false;  // when true, new messages don't replace the highlight
+  let _latestMsgTimestamp = 0;    // unix seconds of the most recently received message
 
   // Shortest-path tracking: senderHash → { hops, senderHash, sender, path }
   const nodeShortestPath = new Map();
@@ -3106,20 +3136,37 @@
   _loadCustomNodeData();
 
   // ── Graph filter settings ─────────────────────────────────────────────────
-  // maxAgeHours: fractional hours (supports sub-hour values for minute-level ages)
-  // minStrengthPct: hide edges weaker than this % of the current max strength (0–90)
-  // Age slider is logarithmic: slider 0–100 maps to 1 min – 7 days
+  // maxAgeHours:    fractional hours; age slider is logarithmic 0–100 → 1 min–7 days
+  // minStrengthPct: % of current max strength; strength slider logarithmic 0–100 → 0–90%
   let _graphFilters = { maxAgeHours: 168, minStrengthPct: 0 };
 
-  // Logarithmic mapping: slider value 0–100 ↔ age 1 min – 10080 min (7 days)
-  const _AGE_MIN_MINS = 1, _AGE_MAX_MINS = 10080; // 7 * 24 * 60
+  // Age: slider 0 = "latest path only"; slider 1–100 = logarithmic 1 min – 7 days
+  // Age window is measured from the latest received message timestamp (not wall clock).
+  const _AGE_MAX_MINS = 10080;
   function _sliderToHours(v) {
-    const mins = Math.exp(v * Math.log(_AGE_MAX_MINS) / 100);
-    return mins / 60;
+    if (v <= 0) return 0; // special: "latest path" mode
+    return Math.exp(v * Math.log(_AGE_MAX_MINS) / 100) / 60;
   }
   function _hoursToSlider(h) {
-    const mins = Math.max(_AGE_MIN_MINS, h * 60);
-    return Math.round(100 * Math.log(mins) / Math.log(_AGE_MAX_MINS));
+    if (h <= 0) return 0;
+    return Math.round(100 * Math.log(Math.max(1, h * 60)) / Math.log(_AGE_MAX_MINS));
+  }
+
+  // Strength: logarithmic 0–100 ↔ 0–90% of max strength
+  // Formula: pct = exp(v/100 * ln(91)) - 1  →  v=0→0%, v=100→90%
+  const _STR_LOG_BASE = Math.log(91);
+  function _strSliderToPct(v) {
+    if (v <= 0) return 0;
+    return Math.exp((v / 100) * _STR_LOG_BASE) - 1;
+  }
+  function _strPctToSlider(pct) {
+    if (pct <= 0) return 0;
+    return Math.round(100 * Math.log(pct + 1) / _STR_LOG_BASE);
+  }
+  function _fmtStrPct(pct) {
+    if (pct <= 0) return "off";
+    if (pct < 1)  return `${pct.toFixed(1)}%`;
+    return `${Math.round(pct)}%`;
   }
 
   function _loadGraphFilters() {
@@ -3133,6 +3180,7 @@
     try { localStorage.setItem("graphFilters", JSON.stringify(_graphFilters)); } catch {}
   }
   function _fmtAgeHours(h) {
+    if (h <= 0) return "latest";
     const mins = h * 60;
     if (mins < 60) return `${Math.round(mins)}m`;
     if (h >= 168) return "7d";
@@ -3144,11 +3192,11 @@
     const ageSlider = document.getElementById("graph-age-slider");
     const strSlider = document.getElementById("graph-str-slider");
     if (ageSlider) ageSlider.value = _hoursToSlider(_graphFilters.maxAgeHours);
-    if (strSlider) strSlider.value = _graphFilters.minStrengthPct;
+    if (strSlider) strSlider.value = _strPctToSlider(_graphFilters.minStrengthPct);
     const ageLabel = document.getElementById("graph-age-label");
     const strLabel = document.getElementById("graph-str-label");
     if (ageLabel) ageLabel.textContent = _fmtAgeHours(_graphFilters.maxAgeHours);
-    if (strLabel) strLabel.textContent = `${_graphFilters.minStrengthPct}%`;
+    if (strLabel) strLabel.textContent = _fmtStrPct(_graphFilters.minStrengthPct);
   }
 
   _loadGraphFilters();
@@ -3161,8 +3209,8 @@
     if (graphInited) updateGraphViz();
   });
   document.getElementById("graph-str-slider").addEventListener("input", function() {
-    _graphFilters.minStrengthPct = +this.value;
-    document.getElementById("graph-str-label").textContent = `${this.value}%`;
+    _graphFilters.minStrengthPct = _strSliderToPct(+this.value);
+    document.getElementById("graph-str-label").textContent = _fmtStrPct(_graphFilters.minStrengthPct);
     _saveGraphFilters();
     if (graphInited) updateGraphViz();
   });
@@ -3541,13 +3589,20 @@
     let   edgesArr = [...graphEdges.values()];
 
     // ── Apply edge filters ───────────────────────────────────────────────
-    const now = Date.now() / 1000;
+    // Reference time: latest message timestamp (so the window is relative to
+    // last network activity, not wall clock). Falls back to now if no messages yet.
+    const refTime    = _latestMsgTimestamp > 0 ? _latestMsgTimestamp : Date.now() / 1000;
     const maxAgeSecs = _graphFilters.maxAgeHours * 3600;
     const allMaxStr  = Math.max(...edgesArr.map(e => e.strength), 1);
     const minStr     = (_graphFilters.minStrengthPct / 100) * allMaxStr;
-    edgesArr = edgesArr.filter(e =>
-      (now - e.last_seen) <= maxAgeSecs && e.strength >= minStr
-    );
+    if (maxAgeSecs === 0) {
+      // "Latest path" mode — show only the currently highlighted route edges
+      edgesArr = edgesArr.filter(e => _routeLinkKeys.has(`${e.a}:${e.b}`) && e.strength >= minStr);
+    } else {
+      edgesArr = edgesArr.filter(e =>
+        (refTime - e.last_seen) <= maxAgeSecs && e.strength >= minStr
+      );
+    }
     // Keep only nodes that have at least one visible edge (self always shown)
     const visIds = new Set(["self"]);
     for (const e of edgesArr) { visIds.add(e.a); visIds.add(e.b); }
