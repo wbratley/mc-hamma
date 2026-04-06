@@ -1362,16 +1362,6 @@
 
 <div id="page-rankings" class="page">
   <div id="rankings-toolbar">
-    <label>Max hops:
-      <select id="rankings-filter-hops">
-        <option value="">Any</option>
-        <option value="0">Direct (0)</option>
-        <option value="1">≤ 1</option>
-        <option value="2">≤ 2</option>
-        <option value="3">≤ 3</option>
-        <option value="5">≤ 5</option>
-      </select>
-    </label>
     <label>Show:
       <select id="rankings-filter-type">
         <option value="">Relays &amp; nodes</option>
@@ -2189,18 +2179,26 @@
       return;
     }
 
-    // Read filter controls
-    const hopsFiltEl = document.getElementById("rankings-filter-hops");
     const typeFiltEl = document.getElementById("rankings-filter-type");
-    const maxHopsFilter = hopsFiltEl && hopsFiltEl.value !== "" ? parseInt(hopsFiltEl.value) : null;
-    const typeFilter    = typeFiltEl ? typeFiltEl.value : "";
+    const typeFilter  = typeFiltEl ? typeFiltEl.value : "";
 
-    // Build nodeHops: hash → min hops seen (from nodeShortestPath, keyed by senderHash)
-    const nodeHops = new Map(); // hash → min hops
+    // Build nodeHops: hash → min hops from self, derived from every stored path.
+    // Sender at r.hops; relay at path[i] is (path.length - i - 1) hops from self
+    // (last relay in path is a direct RF neighbour = 0 hops).
+    const nodeHops = new Map(); // hash → min hops seen
     for (const r of nodeShortestPath.values()) {
       if (!r.senderHash || r.senderHash === "self") continue;
-      const existing = nodeHops.get(r.senderHash);
-      if (existing === undefined || r.hops < existing) nodeHops.set(r.senderHash, r.hops);
+      const sh = r.hops ?? 0;
+      const cur = nodeHops.get(r.senderHash);
+      if (cur === undefined || sh < cur) nodeHops.set(r.senderHash, sh);
+      const path = r.path || [];
+      for (let i = 0; i < path.length; i++) {
+        const rh = path[i];
+        if (!rh || rh === "self") continue;
+        const rHops = path.length - i - 1; // 0 = direct RF neighbour
+        const ce = nodeHops.get(rh);
+        if (ce === undefined || rHops < ce) nodeHops.set(rh, rHops);
+      }
     }
 
     // All rankings derive from graphEdges so they match the graph exactly.
@@ -2249,11 +2247,6 @@
       aggArr = [...nodeAgg.values()].filter(r => r.node_type !== 0);
     }
 
-    // Hop distance filter — only keep nodes with known hop distance within threshold
-    if (maxHopsFilter !== null) {
-      aggArr = aggArr.filter(r => r.minHops !== null && r.minHops <= maxHopsFilter);
-    }
-
     if (aggArr.length === 0) {
       el.innerHTML = '<p id="rankings-empty" style="color:var(--text-muted);font-size:14px;text-align:center;margin-top:40px">No repeater/relay data yet.</p>';
       return;
@@ -2288,33 +2281,65 @@
       return `<table class="rank-table"><thead><tr>${headers}</tr></thead><tbody>${body}</tbody></table>`;
     }
 
-    // ── Nearest neighbors (fewest hops ever seen per sender) ────────────────
-    let topNearest = [...nodeShortestPath.values()]
-      .filter(r => r.senderHash && r.senderHash !== "self");
-    if (maxHopsFilter !== null)
-      topNearest = topNearest.filter(r => r.hops <= maxHopsFilter);
-    topNearest = topNearest
-      .sort((a, b) => a.hops - b.hops || a.senderHash.localeCompare(b.senderHash))
+    function hopsLabel(h) { return h === 0 ? "direct" : h; }
+    function hopsCell(r) {
+      return r.minHops !== null ? hopsLabel(r.minHops) : '<span style="color:var(--text-muted)">—</span>';
+    }
+
+    // ── Helper: display name for any hash ───────────────────────────────────
+    function nodeName(hash) {
+      const gn = graphNodes.get(hash);
+      if (gn && gn.name) return gn.name;
+      const sp = nodeShortestPath.get(hash);
+      if (sp && sp.sender) return sp.sender;
+      return hash.slice(0, 8);
+    }
+
+    // ── Closest nodes by hops (all heard nodes, sorted by hop distance) ──────
+    // Derived from the expanded nodeHops map which covers both senders and relays.
+    const closestNodes = [...nodeHops.entries()]
+      .filter(([h]) => h !== "self")
+      .map(([hash, hops]) => ({ hash, hops, name: nodeName(hash), node_type: graphNodes.get(hash)?.node_type ?? null }))
+      .sort((a, b) => a.hops - b.hops || a.name.localeCompare(b.name))
       .slice(0, 10);
+
+    // ── Closest relays by hops (non-client nodes with known hop distance) ────
+    const closestRelays = [...nodeAgg.values()]
+      .filter(r => r.node_type !== 0 && r.minHops !== null)
+      .sort((a, b) => a.minHops - b.minHops || a.name.localeCompare(b.name))
+      .slice(0, 10);
+
+    // ── Path-button helper ───────────────────────────────────────────────────
+    function pathBtn(hash) {
+      return `<button class="rank-map-btn" onclick="showShortestPath('${hash}')">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>path</button>`;
+    }
 
     const sections = [];
 
-    if (topNearest.length > 0) {
+    if (closestNodes.length > 0) {
       sections.push(`<div>
-        <div class="rank-section-title">Nearest nodes (fewest hops seen)</div>
-        ${buildTable(topNearest, [
+        <div class="rank-section-title">Closest nodes by hops</div>
+        ${buildTable(closestNodes, [
           { label: "#",     cls: "rank-num",   fn: (r, i) => i + 1 },
-          { label: "Node",  cls: "rank-name",  fn: r => r.sender },
-          { label: "Hops",  cls: "rank-count", fn: r => r.hops === 0 ? "direct" : r.hops },
-          { label: "",      cls: "",           fn: r => `<button class="rank-map-btn" onclick="showShortestPath('${r.senderHash}')">
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>path</button>` },
+          { label: "Node",  cls: "rank-name",  fn: r => r.name + typeBadge(r.node_type) },
+          { label: "Hops",  cls: "rank-count", fn: r => hopsLabel(r.hops) },
+          { label: "",      cls: "",           fn: r => pathBtn(r.hash) },
         ])}
       </div>`);
     }
 
-    function hopsCell(r) {
-      if (r.minHops === null) return '<span style="color:var(--text-muted)">?</span>';
-      return r.minHops === 0 ? "direct" : r.minHops;
+    if (closestRelays.length > 0) {
+      sections.push(`<div>
+        <div class="rank-section-title">Closest relays by hops</div>
+        ${buildTable(closestRelays, [
+          { label: "#",         cls: "rank-num",      fn: (r, i) => i + 1 },
+          { label: "Node",      cls: "rank-name",     fn: r => r.name + typeBadge(r.node_type) },
+          { label: "Hops",      cls: "rank-count",    fn: r => hopsLabel(r.minHops) },
+          { label: "Total obs", cls: "rank-strength", fn: r => r.totalObs },
+          { label: "",          cls: "",              fn: r => mapBtn(r.hash) },
+        ])}
+      </div>`);
     }
 
     sections.push(`<div>
@@ -2644,11 +2669,8 @@
   );
 
   // Rankings filter controls
-  const rankingsFilterHops = document.getElementById("rankings-filter-hops");
   const rankingsFilterType = document.getElementById("rankings-filter-type");
-  [rankingsFilterHops, rankingsFilterType].forEach(el => {
-    if (el) el.addEventListener("change", renderRankings);
-  });
+  if (rankingsFilterType) rankingsFilterType.addEventListener("change", renderRankings);
 
   function sendSmartAddConfig() {
     if (!ws || !wsConnected) return;
