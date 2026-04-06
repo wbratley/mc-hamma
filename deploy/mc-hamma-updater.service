@@ -1,0 +1,17 @@
+[Unit]
+Description=mc-hamma Auto-Updater (one-shot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=pi
+Group=pi
+
+WorkingDirectory=/home/pi/mc-hamma
+
+ExecStart=/home/pi/mc-hamma/deploy/update.sh
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mc-hamma-updater

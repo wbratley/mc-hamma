@@ -1,0 +1,17 @@
+[Unit]
+Description=Poll for mc-hamma updates every 5 minutes
+
+[Timer]
+# Wait 2 minutes after boot before first check (let network settle)
+OnBootSec=2min
+
+# Then every 5 minutes from when the last run completed
+OnUnitActiveSec=5min
+
+# If a run was missed (system was off), run immediately on next boot
+Persistent=true
+
+Unit=mc-hamma-updater.service
+
+[Install]
+WantedBy=timers.target
