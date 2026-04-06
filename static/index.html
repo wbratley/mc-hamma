@@ -511,34 +511,25 @@
     /* ── Route highlight (persistent green dashes on last message path) ── */
     @keyframes routeFlow    { to { stroke-dashoffset: -24; } }
     @keyframes routeFlowRev { to { stroke-dashoffset:  24; } }
-    @keyframes routeGlow {
-      0%, 100% { filter: drop-shadow(0 0 3px rgba(0,255,120,0.5)); }
-      50%       { filter: drop-shadow(0 0 12px rgba(0,255,120,1.0)) drop-shadow(0 0 24px rgba(0,255,120,0.4)); }
-    }
     .graph-link.link-route {
       stroke: #00ff88 !important;
       stroke-width: 4 !important;
       stroke-dasharray: 10 6;
-      animation: routeFlow 0.7s linear infinite, routeGlow 1.4s ease-in-out infinite;
+      animation: routeFlow 0.7s linear infinite;
     }
     /* edges where the message flowed against canonical (a→b) direction */
-    .graph-link.link-route.link-route-rev { animation-name: routeFlowRev, routeGlow; }
+    .graph-link.link-route.link-route-rev { animation-name: routeFlowRev; }
     /* ── New node animations ── */
     @keyframes nodeAppear {
       0%   { opacity: 0; r: 0; }
       60%  { opacity: 1; r: calc(var(--nr) * 1.4); }
       100% { opacity: 1; r: var(--nr); }
     }
-    @keyframes nodeGlow {
-      0%, 100% { filter: drop-shadow(0 0 0px transparent); }
-      50%       { filter: drop-shadow(0 0 8px #ffe066); }
-    }
     .gnode.is-new > circle.graph-node-circle {
       stroke: #ffe066 !important; stroke-width: 3 !important;
-      animation: nodeGlow 1.6s ease-in-out infinite;
     }
     .gnode.just-appeared > circle.graph-node-circle {
-      animation: nodeAppear 0.5s cubic-bezier(.17,.89,.32,1.28) forwards, nodeGlow 1.6s ease-in-out 0.5s infinite;
+      animation: nodeAppear 0.5s cubic-bezier(.17,.89,.32,1.28) forwards;
     }
     /* ── Graph message info panel ── */
     #graph-toast {
