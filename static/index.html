@@ -560,6 +560,16 @@
     }
     #graph-toast .toast-hops:hover { color: var(--accent); background: var(--accent-dim); }
     #graph-toast .toast-text { color: var(--text); word-break: break-word; }
+    #graph-toast .toast-dismiss {
+      background: none; border: none; color: var(--text-muted); cursor: pointer;
+      font-size: 16px; line-height: 1; padding: 0 2px; border-radius: 4px;
+      flex-shrink: 0;
+    }
+    #graph-toast .toast-dismiss:hover { color: var(--text); background: var(--surface2); }
+    #graph-toast.locked { border-left-color: var(--status-warn); }
+    #graph-toast.locked .toast-sender::after {
+      content: " 🔒"; font-size: 9px; opacity: 0.6;
+    }
     /* ── Highlighted sender node (from "show on map" / incoming message) ── */
     .gnode.is-highlighted > circle.graph-node-circle {
       stroke: #4f8ef7 !important; stroke-width: 4 !important;
@@ -1314,6 +1324,7 @@
       <div class="toast-header">
         <div class="toast-sender"></div>
         <div class="toast-hops"></div>
+        <button class="toast-dismiss" id="graph-toast-dismiss" title="Clear selection">×</button>
       </div>
       <div class="toast-text"></div>
     </div>
@@ -1811,8 +1822,20 @@
     // Update btn badge indicator: show total unread across non-selected channels
     updateBtnBadge();
 
-    // Graph route highlight + persistent info panel (always, even if graph not open yet)
-    if (!msg.own) {
+    // Track shortest path per sender node
+    if (!msg.own && msg.sender_hash) {
+      const h = msg.sender_hash;
+      const hops = msg.hops ?? (msg.path || []).length;
+      const existing = nodeShortestPath.get(h);
+      if (!existing || hops < existing.hops) {
+        const pathHashes = (msg.path || []).map(p => (typeof p === "object" ? p.hash : p));
+        nodeShortestPath.set(h, { hops, senderHash: h, sender: msg.sender, path: pathHashes, msg });
+        if (document.getElementById("page-rankings").classList.contains("active")) renderRankings();
+      }
+    }
+
+    // Graph route highlight + persistent info panel — skip if path is locked
+    if (!msg.own && !_pathLocked) {
       _lastHighlightedMsg = msg;
       const pathHashes = (msg.path || []).map(h => (typeof h === "object" ? h.hash : h));
       if (graphInited) highlightMessageRoute(msg.sender_hash || "", pathHashes);
@@ -2052,10 +2075,37 @@
     if (graphBtn) graphBtn.classList.add("active");
     navMenu.classList.remove("open");
     _graphPageOpen = true;
+    _pathLocked = true;
     _highlightNodeId = nodeId;
     requestAnimationFrame(() => requestAnimationFrame(() => {
       if (!graphInited) initGraphSvg();
       else { updateGraphViz(); _applyNodeHighlight(); }
+    }));
+  }
+
+  // Navigate to graph and highlight the shortest known path to a node
+  function showShortestPath(senderHash) {
+    const rec = nodeShortestPath.get(senderHash);
+    if (!rec) { showNodeOnGraph(senderHash); return; }
+
+    document.querySelectorAll(".page").forEach(p => p.classList.remove("active"));
+    document.getElementById("page-graph").classList.add("active");
+    navMenu.querySelectorAll(".nav-item").forEach(b => b.classList.remove("active"));
+    const graphBtn = document.querySelector(".nav-item[data-page='graph']");
+    if (graphBtn) graphBtn.classList.add("active");
+    navMenu.classList.remove("open");
+    _graphPageOpen = true;
+    _pathLocked = true;
+    _lastHighlightedMsg = rec.msg;
+
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (!graphInited) initGraphSvg();
+      else updateGraphViz();
+      setGraphMapMode(true);
+      highlightMessageRoute(rec.senderHash, rec.path);
+      updateSenderMarker(rec.msg);
+      showGraphInfo(rec.msg, true);
+      markGraphNodesRead();
     }));
   }
 
@@ -2139,7 +2189,26 @@
       return `<table class="rank-table"><thead><tr>${headers}</tr></thead><tbody>${body}</tbody></table>`;
     }
 
+    // ── Nearest neighbors (fewest hops ever seen per sender) ────────────────
+    const topNearest = [...nodeShortestPath.values()]
+      .filter(r => r.senderHash && r.senderHash !== "self")
+      .sort((a, b) => a.hops - b.hops || a.senderHash.localeCompare(b.senderHash))
+      .slice(0, 10);
+
     const sections = [];
+
+    if (topNearest.length > 0) {
+      sections.push(`<div>
+        <div class="rank-section-title">Nearest neighbors (fewest hops seen)</div>
+        ${buildTable(topNearest, [
+          { label: "#",     cls: "rank-num",   fn: (r, i) => i + 1 },
+          { label: "Node",  cls: "rank-name",  fn: r => r.sender },
+          { label: "Hops",  cls: "rank-count", fn: r => r.hops === 0 ? "direct" : r.hops },
+          { label: "",      cls: "",           fn: r => `<button class="rank-map-btn" onclick="showShortestPath('${r.senderHash}')">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>path</button>` },
+        ])}
+      </div>`);
+    }
 
     sections.push(`<div>
       <div class="rank-section-title">Top relays by path observations</div>
@@ -2744,7 +2813,7 @@
   // Persistent — stays until the next message arrives (no auto-dismiss).
   let _infoPanelMsg = null; // current message shown in panel (for path popup)
 
-  function showGraphInfo(msg) {
+  function showGraphInfo(msg, locked = false) {
     const el = document.getElementById("graph-toast");
     if (!el) return;
     _infoPanelMsg = msg;
@@ -2762,6 +2831,7 @@
     el.querySelector(".toast-text").textContent =
       msg.text.length > 100 ? msg.text.slice(0, 100) + "…" : msg.text;
     el.classList.add("visible");
+    el.classList.toggle("locked", locked);
   }
 
   document.getElementById("graph-toast").querySelector(".toast-hops")
@@ -2772,20 +2842,35 @@
       }
     });
 
+  document.getElementById("graph-toast-dismiss").addEventListener("click", (e) => {
+    e.stopPropagation();
+    clearRouteHighlight(true);
+  });
+
 
   let _routeLinkKeys    = new Set();
   let _routeLinkReverse = new Set(); // edge keys where message flowed b→a (reverse of canonical)
   let _highlightNodeId  = null;   // sender node to highlight in graph
   let _messagePin       = null;   // Leaflet marker for sender location
   let _lastHighlightedMsg = null; // last msg passed to showOnMap / processMessage
+  let _pathLocked       = false;  // when true, new messages don't replace the highlight
 
-  function clearRouteHighlight() {
+  // Shortest-path tracking: senderHash → { hops, senderHash, sender, path }
+  const nodeShortestPath = new Map();
+
+  function clearRouteHighlight(unlock = false) {
     if (_gLinkSel) _gLinkSel.classed("link-route", false).classed("link-route-rev", false);
     _routeLinkKeys.clear();
     _routeLinkReverse.clear();
     _highlightNodeId = null;
     if (_messagePin) { _messagePin.remove(); _messagePin = null; }
     if (_gNodeSel) _gNodeSel.classed("is-highlighted", false);
+    if (unlock) {
+      _pathLocked = false;
+      _infoPanelMsg = null;
+      const toast = document.getElementById("graph-toast");
+      if (toast) { toast.classList.remove("visible", "locked"); }
+    }
   }
 
   function highlightMessageRoute(senderHash, pathHops) {
@@ -2917,6 +3002,7 @@
     const pathHashes = (msg.path || []).map(h => (typeof h === "object" ? h.hash : h));
     const senderHash = msg.sender_hash || "";
 
+    _pathLocked = true;
     _lastHighlightedMsg = msg;
     requestAnimationFrame(() => requestAnimationFrame(() => {
       if (!graphInited) initGraphSvg();
@@ -2924,7 +3010,7 @@
       setGraphMapMode(true);
       highlightMessageRoute(senderHash, pathHashes);
       updateSenderMarker(msg);
-      showGraphInfo(msg);
+      showGraphInfo(msg, true);
       markGraphNodesRead();
     }));
   }
