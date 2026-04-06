@@ -1537,9 +1537,11 @@
     }
 
     if (markerEl) {
-      // Scroll so the marker is at the top, revealing new messages below
+      // Scroll so the marker is at the top, revealing new messages below.
+      // markerEl.offsetTop is relative to offsetParent (#page-chat), so subtract
+      // messagesEl.offsetTop to get position within the scroll container.
       requestAnimationFrame(() => {
-        messagesEl.scrollTop = markerEl.offsetTop - 8;
+        messagesEl.scrollTop = markerEl.offsetTop - messagesEl.offsetTop - 8;
       });
     } else {
       messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -1780,7 +1782,8 @@
     ch.messages.push(msg);
     if (ch.messages.length > 1000) ch.messages.splice(0, ch.messages.length - 1000);
 
-    if (msg.channel_idx === currentIdx) {
+    const chatPageVisible = document.getElementById("page-chat").classList.contains("active");
+    if (msg.channel_idx === currentIdx && chatPageVisible) {
       // Append to live view
       const dl = fmtDate(msg.timestamp);
       const seps = messagesEl.querySelectorAll(".date-sep");
@@ -1796,7 +1799,8 @@
       // Mark this message as read immediately (we're looking at it)
       setLastReadId("ch_" + msg.channel_idx, msg.id);
     } else {
-      // Background channel: only count as unread if newer than last read point
+      // Background channel (or user is on a different nav page): only count as
+      // unread if newer than last read point
       if ((msg.id || 0) > getLastReadId("ch_" + msg.channel_idx)) ch.unread++;
       // If nothing selected yet, auto-select this channel
       if (currentIdx === null) {
@@ -1866,12 +1870,21 @@
       navMenu.querySelectorAll(".nav-item").forEach(b => b.classList.remove("active"));
       btn.classList.add("active");
       if (page === "chat") {
-        // Scroll to read marker if present, otherwise go to bottom
-        const marker = messagesEl.querySelector(".read-marker");
-        requestAnimationFrame(() => {
-          if (marker) messagesEl.scrollTop = marker.offsetTop - 8;
-          else messagesEl.scrollTop = messagesEl.scrollHeight;
-        });
+        if (currentIdx !== null) {
+          // Re-render with the unread marker so new messages that arrived while
+          // on another tab are shown, then mark everything as read.
+          const ch = channels.get(currentIdx);
+          const lastReadId = ch ? getLastReadId("ch_" + currentIdx) : null;
+          if (ch) {
+            ch.unread = 0;
+            setLastReadId("ch_" + currentIdx, maxMsgId(ch.messages));
+            renderDropdown();
+            updateBtnBadge();
+          }
+          renderMessages(lastReadId);
+        } else {
+          messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
       }
       if (page === "chats") renderChatsList();
       if (page === "contacts") renderContacts();
