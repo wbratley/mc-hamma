@@ -1313,7 +1313,7 @@
       <span class="gf-val" id="graph-age-label">7d</span>
       <div class="gf-sep"></div>
       <span class="gf-label">Strength ≥</span>
-      <input type="range" class="gf-range" id="graph-str-slider" min="0" max="90" step="5" value="0">
+      <input type="range" class="gf-range" id="graph-str-slider" min="0" max="100" step="1" value="0">
       <span class="gf-val" id="graph-str-label">0%</span>
     </div>
   </div>
@@ -3059,20 +3059,34 @@
   _loadCustomNodeData();
 
   // ── Graph filter settings ─────────────────────────────────────────────────
-  // maxAgeHours: fractional hours (supports sub-hour values for minute-level ages)
-  // minStrengthPct: hide edges weaker than this % of the current max strength (0–90)
-  // Age slider is logarithmic: slider 0–100 maps to 1 min – 7 days
+  // maxAgeHours:    fractional hours; age slider is logarithmic 0–100 → 1 min–7 days
+  // minStrengthPct: % of current max strength; strength slider logarithmic 0–100 → 0–90%
   let _graphFilters = { maxAgeHours: 168, minStrengthPct: 0 };
 
-  // Logarithmic mapping: slider value 0–100 ↔ age 1 min – 10080 min (7 days)
-  const _AGE_MIN_MINS = 1, _AGE_MAX_MINS = 10080; // 7 * 24 * 60
+  // Age: logarithmic 0–100 ↔ 1 min – 10080 min (7 days)
+  const _AGE_MAX_MINS = 10080;
   function _sliderToHours(v) {
-    const mins = Math.exp(v * Math.log(_AGE_MAX_MINS) / 100);
-    return mins / 60;
+    return Math.exp(v * Math.log(_AGE_MAX_MINS) / 100) / 60;
   }
   function _hoursToSlider(h) {
-    const mins = Math.max(_AGE_MIN_MINS, h * 60);
-    return Math.round(100 * Math.log(mins) / Math.log(_AGE_MAX_MINS));
+    return Math.round(100 * Math.log(Math.max(1, h * 60)) / Math.log(_AGE_MAX_MINS));
+  }
+
+  // Strength: logarithmic 0–100 ↔ 0–90% of max strength
+  // Formula: pct = exp(v/100 * ln(91)) - 1  →  v=0→0%, v=100→90%
+  const _STR_LOG_BASE = Math.log(91);
+  function _strSliderToPct(v) {
+    if (v <= 0) return 0;
+    return Math.exp((v / 100) * _STR_LOG_BASE) - 1;
+  }
+  function _strPctToSlider(pct) {
+    if (pct <= 0) return 0;
+    return Math.round(100 * Math.log(pct + 1) / _STR_LOG_BASE);
+  }
+  function _fmtStrPct(pct) {
+    if (pct <= 0) return "off";
+    if (pct < 1)  return `${pct.toFixed(1)}%`;
+    return `${Math.round(pct)}%`;
   }
 
   function _loadGraphFilters() {
@@ -3097,11 +3111,11 @@
     const ageSlider = document.getElementById("graph-age-slider");
     const strSlider = document.getElementById("graph-str-slider");
     if (ageSlider) ageSlider.value = _hoursToSlider(_graphFilters.maxAgeHours);
-    if (strSlider) strSlider.value = _graphFilters.minStrengthPct;
+    if (strSlider) strSlider.value = _strPctToSlider(_graphFilters.minStrengthPct);
     const ageLabel = document.getElementById("graph-age-label");
     const strLabel = document.getElementById("graph-str-label");
     if (ageLabel) ageLabel.textContent = _fmtAgeHours(_graphFilters.maxAgeHours);
-    if (strLabel) strLabel.textContent = `${_graphFilters.minStrengthPct}%`;
+    if (strLabel) strLabel.textContent = _fmtStrPct(_graphFilters.minStrengthPct);
   }
 
   _loadGraphFilters();
@@ -3114,8 +3128,8 @@
     if (graphInited) updateGraphViz();
   });
   document.getElementById("graph-str-slider").addEventListener("input", function() {
-    _graphFilters.minStrengthPct = +this.value;
-    document.getElementById("graph-str-label").textContent = `${this.value}%`;
+    _graphFilters.minStrengthPct = _strSliderToPct(+this.value);
+    document.getElementById("graph-str-label").textContent = _fmtStrPct(_graphFilters.minStrengthPct);
     _saveGraphFilters();
     if (graphInited) updateGraphViz();
   });
