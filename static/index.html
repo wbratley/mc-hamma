@@ -904,6 +904,21 @@
       padding-left: 4px;
     }
 
+    .pubkey-preview {
+      font-size: 9px;
+      font-family: monospace;
+      color: var(--text-muted);
+      opacity: 0.55;
+      margin-left: 4px;
+      vertical-align: middle;
+      letter-spacing: 0.03em;
+      user-select: none;
+    }
+
+    .chat-item-name .pubkey-preview {
+      font-size: 8px;
+    }
+
     .bubble {
       background: var(--bubble-bg);
       border: 1px solid var(--bubble-border);
@@ -1360,9 +1375,10 @@
     "#bb86fc", "#56ccf2", "#f2994a", "#eb5757",
   ];
 
-  function senderColour(name) {
+  function senderColour(name, key) {
+    const src = key || name;
     let h = 0;
-    for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+    for (let i = 0; i < src.length; i++) h = (h * 31 + src.charCodeAt(i)) >>> 0;
     return COLOURS[h % COLOURS.length];
   }
 
@@ -1715,8 +1731,16 @@
 
     const senderName = document.createElement("span");
     senderName.textContent = msg.sender;
-    senderName.style.color = senderColour(msg.sender);
+    senderName.style.color = senderColour(msg.sender, msg.sender_hash);
     senderDiv.appendChild(senderName);
+
+    if (!msg.own && msg.sender_hash) {
+      const pkPrev = document.createElement("span");
+      pkPrev.className = "pubkey-preview";
+      pkPrev.textContent = msg.sender_hash.slice(0, 4);
+      pkPrev.title = msg.sender_hash;
+      senderDiv.appendChild(pkPrev);
+    }
 
     if (!msg.own) {
       const hasPath = msg.hops > 0 && msg.path && msg.path.length > 0;
@@ -2374,7 +2398,7 @@
 
       const avatar = document.createElement("div");
       avatar.className = "contact-avatar";
-      avatar.style.cssText = `width:32px;height:32px;font-size:13px;color:${senderColour(c.name)}`;
+      avatar.style.cssText = `width:32px;height:32px;font-size:13px;color:${senderColour(c.name, c.pubkey)}`;
       avatar.textContent = c.name.charAt(0).toUpperCase();
       card.appendChild(avatar);
 
@@ -2475,7 +2499,7 @@
 
       const avatar = document.createElement("div");
       avatar.className = "contact-avatar";
-      avatar.style.color = senderColour(c.name);
+      avatar.style.color = senderColour(c.name, c.key);
       avatar.textContent = (c.name || "?").charAt(0).toUpperCase();
       card.appendChild(avatar);
 
@@ -2657,7 +2681,7 @@
 
       const avatar = document.createElement("div");
       avatar.className = "chat-avatar";
-      avatar.style.color = senderColour(chat.name);
+      avatar.style.color = senderColour(chat.name, key);
       avatar.textContent = chat.name.charAt(0).toUpperCase();
       item.appendChild(avatar);
 
@@ -2669,6 +2693,13 @@
       const nameEl = document.createElement("span");
       nameEl.className = "chat-item-name";
       nameEl.textContent = chat.name;
+      if (key) {
+        const pkPrev = document.createElement("span");
+        pkPrev.className = "pubkey-preview";
+        pkPrev.textContent = key.slice(0, 4);
+        pkPrev.title = key;
+        nameEl.appendChild(pkPrev);
+      }
       hdr.appendChild(nameEl);
       if (last) {
         const timeEl = document.createElement("span");
@@ -2727,8 +2758,17 @@
     if (!msg.own) {
       const senderDiv = document.createElement("div");
       senderDiv.className = "sender";
-      senderDiv.textContent = msg.sender;
-      senderDiv.style.color = senderColour(msg.sender);
+      const senderName = document.createElement("span");
+      senderName.textContent = msg.sender;
+      senderName.style.color = senderColour(msg.sender, msg.contact_key);
+      senderDiv.appendChild(senderName);
+      if (msg.contact_key) {
+        const pkPrev = document.createElement("span");
+        pkPrev.className = "pubkey-preview";
+        pkPrev.textContent = msg.contact_key.slice(0, 4);
+        pkPrev.title = msg.contact_key;
+        senderDiv.appendChild(pkPrev);
+      }
       row.appendChild(senderDiv);
     }
 
