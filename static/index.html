@@ -1364,9 +1364,9 @@
   <div id="rankings-toolbar">
     <label>Show:
       <select id="rankings-filter-type">
-        <option value="">Relays &amp; nodes</option>
-        <option value="relay">Relays only</option>
-        <option value="all">All (incl. clients)</option>
+        <option value="all">All</option>
+        <option value="repeater">Repeaters &amp; gateways</option>
+        <option value="client">Clients only</option>
       </select>
     </label>
   </div>
@@ -2182,22 +2182,30 @@
     const typeFiltEl = document.getElementById("rankings-filter-type");
     const typeFilter  = typeFiltEl ? typeFiltEl.value : "";
 
-    // Build nodeHops: hash → min hops from self, derived from every stored path.
-    // Sender at r.hops; relay at path[i] is (path.length - i - 1) hops from self
-    // (last relay in path is a direct RF neighbour = 0 hops).
-    const nodeHops = new Map(); // hash → min hops seen
-    for (const r of nodeShortestPath.values()) {
-      if (!r.senderHash || r.senderHash === "self") continue;
-      const sh = r.hops ?? 0;
-      const cur = nodeHops.get(r.senderHash);
-      if (cur === undefined || sh < cur) nodeHops.set(r.senderHash, sh);
-      const path = r.path || [];
-      for (let i = 0; i < path.length; i++) {
-        const rh = path[i];
-        if (!rh || rh === "self") continue;
-        const rHops = path.length - i - 1; // 0 = direct RF neighbour
-        const ce = nodeHops.get(rh);
-        if (ce === undefined || rHops < ce) nodeHops.set(rh, rHops);
+    // Build nodeHops via BFS from "self" through graphEdges.
+    // graphEdges is populated from the snapshot so this works immediately on load.
+    // A direct RF neighbour (1 edge from self) = 0 Meshtastic hops ("direct").
+    const nodeHops = new Map(); // hash → min hops from self
+    {
+      // Build adjacency list
+      const adj = new Map();
+      for (const e of graphEdges.values()) {
+        if (!adj.has(e.a)) adj.set(e.a, []);
+        if (!adj.has(e.b)) adj.set(e.b, []);
+        adj.get(e.a).push(e.b);
+        adj.get(e.b).push(e.a);
+      }
+      // BFS: self starts at -1 so its direct neighbours get hops = 0
+      const visited = new Set(["self"]);
+      const queue = [["self", -1]];
+      while (queue.length > 0) {
+        const [curr, hops] = queue.shift();
+        for (const nb of (adj.get(curr) || [])) {
+          if (visited.has(nb) || nb === "self") continue;
+          visited.add(nb);
+          nodeHops.set(nb, hops + 1);
+          queue.push([nb, hops + 1]);
+        }
       }
     }
 
@@ -2235,20 +2243,18 @@
       }
     }
 
-    // Type filter: by default exclude confirmed non-relaying clients (node_type 0).
-    // "relay" = only repeaters/room-servers/gateways; "all" = include clients too.
+    // Type filter applied to the activity-based tables (obs, links, strength).
     let aggArr;
-    if (typeFilter === "all") {
-      aggArr = [...nodeAgg.values()];
-    } else if (typeFilter === "relay") {
+    if (typeFilter === "repeater") {
       aggArr = [...nodeAgg.values()].filter(r => r.node_type === 1 || r.node_type === 2 || r.node_type === 3);
+    } else if (typeFilter === "client") {
+      aggArr = [...nodeAgg.values()].filter(r => r.node_type === 0);
     } else {
-      // default: exclude confirmed clients (node_type 0)
-      aggArr = [...nodeAgg.values()].filter(r => r.node_type !== 0);
+      aggArr = [...nodeAgg.values()]; // "all" = everything
     }
 
     if (aggArr.length === 0) {
-      el.innerHTML = '<p id="rankings-empty" style="color:var(--text-muted);font-size:14px;text-align:center;margin-top:40px">No repeater/relay data yet.</p>';
+      el.innerHTML = '<p id="rankings-empty" style="color:var(--text-muted);font-size:14px;text-align:center;margin-top:40px">No node data yet.</p>';
       return;
     }
 
@@ -2286,26 +2292,15 @@
       return r.minHops !== null ? hopsLabel(r.minHops) : '<span style="color:var(--text-muted)">—</span>';
     }
 
-    // ── Helper: display name for any hash ───────────────────────────────────
-    function nodeName(hash) {
-      const gn = graphNodes.get(hash);
-      if (gn && gn.name) return gn.name;
-      const sp = nodeShortestPath.get(hash);
-      if (sp && sp.sender) return sp.sender;
-      return hash.slice(0, 8);
-    }
-
-    // ── Closest nodes by hops (all heard nodes, sorted by hop distance) ──────
-    // Derived from the expanded nodeHops map which covers both senders and relays.
-    const closestNodes = [...nodeHops.entries()]
-      .filter(([h]) => h !== "self")
-      .map(([hash, hops]) => ({ hash, hops, name: nodeName(hash), node_type: graphNodes.get(hash)?.node_type ?? null }))
-      .sort((a, b) => a.hops - b.hops || a.name.localeCompare(b.name))
+    // ── Closest nodes by hops — all nodes in graph sorted by BFS distance ───
+    const closestNodes = [...nodeAgg.values()]
+      .filter(r => r.minHops !== null)
+      .sort((a, b) => a.minHops - b.minHops || a.name.localeCompare(b.name))
       .slice(0, 10);
 
-    // ── Closest relays by hops (non-client nodes with known hop distance) ────
-    const closestRelays = [...nodeAgg.values()]
-      .filter(r => r.node_type !== 0 && r.minHops !== null)
+    // ── Closest repeaters by hops — repeater/gateway types only ─────────────
+    const closestRepeaters = [...nodeAgg.values()]
+      .filter(r => (r.node_type === 1 || r.node_type === 2 || r.node_type === 3) && r.minHops !== null)
       .sort((a, b) => a.minHops - b.minHops || a.name.localeCompare(b.name))
       .slice(0, 10);
 
@@ -2323,27 +2318,26 @@
         ${buildTable(closestNodes, [
           { label: "#",     cls: "rank-num",   fn: (r, i) => i + 1 },
           { label: "Node",  cls: "rank-name",  fn: r => r.name + typeBadge(r.node_type) },
-          { label: "Hops",  cls: "rank-count", fn: r => hopsLabel(r.hops) },
-          { label: "",      cls: "",           fn: r => pathBtn(r.hash) },
+          { label: "Hops",  cls: "rank-count", fn: r => hopsLabel(r.minHops) },
+          { label: "",      cls: "",           fn: r => mapBtn(r.hash) },
         ])}
       </div>`);
     }
 
-    if (closestRelays.length > 0) {
+    if (closestRepeaters.length > 0) {
       sections.push(`<div>
-        <div class="rank-section-title">Closest relays by hops</div>
-        ${buildTable(closestRelays, [
-          { label: "#",         cls: "rank-num",      fn: (r, i) => i + 1 },
-          { label: "Node",      cls: "rank-name",     fn: r => r.name + typeBadge(r.node_type) },
-          { label: "Hops",      cls: "rank-count",    fn: r => hopsLabel(r.minHops) },
-          { label: "Total obs", cls: "rank-strength", fn: r => r.totalObs },
-          { label: "",          cls: "",              fn: r => mapBtn(r.hash) },
+        <div class="rank-section-title">Closest repeaters by hops</div>
+        ${buildTable(closestRepeaters, [
+          { label: "#",     cls: "rank-num",   fn: (r, i) => i + 1 },
+          { label: "Node",  cls: "rank-name",  fn: r => r.name + typeBadge(r.node_type) },
+          { label: "Hops",  cls: "rank-count", fn: r => hopsLabel(r.minHops) },
+          { label: "",      cls: "",           fn: r => mapBtn(r.hash) },
         ])}
       </div>`);
     }
 
     sections.push(`<div>
-      <div class="rank-section-title">Top relays by path observations</div>
+      <div class="rank-section-title">Top nodes by path observations</div>
       ${buildTable(topObs, [
         { label: "#",           cls: "rank-num",   fn: (r, i) => i + 1 },
         { label: "Node",        cls: "rank-name",  fn: r => r.name + typeBadge(r.node_type) },
@@ -2355,7 +2349,7 @@
     </div>`);
 
     sections.push(`<div>
-      <div class="rank-section-title">Top relays by link count</div>
+      <div class="rank-section-title">Top nodes by link count</div>
       ${buildTable(topLinks, [
         { label: "#",           cls: "rank-num",   fn: (r, i) => i + 1 },
         { label: "Node",        cls: "rank-name",  fn: r => r.name + typeBadge(r.node_type) },
@@ -2367,7 +2361,7 @@
     </div>`);
 
     sections.push(`<div>
-      <div class="rank-section-title">Strongest relays (link strength, last 6 h weighted)</div>
+      <div class="rank-section-title">Strongest nodes (link strength, last 6 h weighted)</div>
       ${buildTable(topStrength, [
         { label: "#",           cls: "rank-num",   fn: (r, i) => i + 1 },
         { label: "Node",        cls: "rank-name",  fn: r => r.name + typeBadge(r.node_type) },
