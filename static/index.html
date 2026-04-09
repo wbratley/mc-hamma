@@ -286,21 +286,13 @@
       padding: 10px 14px; background: var(--surface);
       border-bottom: 1px solid var(--border); flex-shrink: 0;
     }
-    #contacts-toolbar select, #contacts-toolbar input,
-    #rankings-toolbar select, #rankings-toolbar input {
+    #contacts-toolbar select, #contacts-toolbar input {
       background: var(--surface2); border: 1px solid var(--border);
       color: var(--text); border-radius: 6px; padding: 5px 8px;
       font-size: 12px; outline: none;
     }
-    #contacts-toolbar select:focus, #contacts-toolbar input:focus,
-    #rankings-toolbar select:focus, #rankings-toolbar input:focus { border-color: var(--accent); }
+    #contacts-toolbar select:focus, #contacts-toolbar input:focus { border-color: var(--accent); }
     #contacts-toolbar label { font-size: 12px; color: var(--text-secondary); }
-    #rankings-toolbar {
-      display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
-      padding: 10px 14px; background: var(--surface);
-      border-bottom: 1px solid var(--border); flex-shrink: 0;
-    }
-    #rankings-toolbar label { font-size: 12px; color: var(--text-secondary); }
     #contacts-mgmt {
       display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
       padding: 8px 14px; background: var(--surface2);
@@ -1361,15 +1353,6 @@
 </div>
 
 <div id="page-rankings" class="page">
-  <div id="rankings-toolbar">
-    <label>Show:
-      <select id="rankings-filter-type">
-        <option value="all">All</option>
-        <option value="repeater">Repeaters &amp; gateways</option>
-        <option value="client">Clients only</option>
-      </select>
-    </label>
-  </div>
   <div id="rankings-content" style="display:flex;flex-direction:column;gap:20px;padding:16px;overflow-y:auto;flex:1;min-height:0">
     <p id="rankings-empty" style="color:var(--text-muted);font-size:14px;text-align:center;margin-top:40px">No path data yet — rankings appear once messages are received.</p>
   </div>
@@ -2179,9 +2162,6 @@
       return;
     }
 
-    const typeFiltEl = document.getElementById("rankings-filter-type");
-    const typeFilter  = typeFiltEl ? typeFiltEl.value : "";
-
     // Build nodeHops via BFS from "self" through graphEdges.
     // graphEdges is populated from the snapshot so this works immediately on load.
     // A direct RF neighbour (1 edge from self) = 0 Meshtastic hops ("direct").
@@ -2243,15 +2223,7 @@
       }
     }
 
-    // Type filter applied to the activity-based tables (obs, links, strength).
-    let aggArr;
-    if (typeFilter === "repeater") {
-      aggArr = [...nodeAgg.values()].filter(r => r.node_type === 1 || r.node_type === 2 || r.node_type === 3);
-    } else if (typeFilter === "client") {
-      aggArr = [...nodeAgg.values()].filter(r => r.node_type === 0);
-    } else {
-      aggArr = [...nodeAgg.values()]; // "all" = everything
-    }
+    const aggArr = [...nodeAgg.values()];
 
     if (aggArr.length === 0) {
       el.innerHTML = '<p id="rankings-empty" style="color:var(--text-muted);font-size:14px;text-align:center;margin-top:40px">No node data yet.</p>';
@@ -2661,10 +2633,6 @@
   [sortSelect, filterType, filterHops, filterSeen, filterChat].forEach(el =>
     el.addEventListener("change", renderContacts)
   );
-
-  // Rankings filter controls
-  const rankingsFilterType = document.getElementById("rankings-filter-type");
-  if (rankingsFilterType) rankingsFilterType.addEventListener("change", renderRankings);
 
   function sendSmartAddConfig() {
     if (!ws || !wsConnected) return;
