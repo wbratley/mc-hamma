@@ -4,7 +4,7 @@
 # Run by mc-hamma-updater.service via a systemd timer.
 set -euo pipefail
 
-REPO_DIR="/home/pi/mc-hamma"
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="${REPO_DIR}/.venv"
 SERVICE_NAME="mc-hamma.service"
 
