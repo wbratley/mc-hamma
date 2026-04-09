@@ -411,6 +411,22 @@
     .contact-chip.type-room     { color: #56ccf2; }
     .contact-map { font-size: 12px; color: var(--accent); text-decoration: none; flex-shrink: 0; }
     .contact-map:hover { text-decoration: underline; }
+    .ping-btn {
+      font-size: 11px;
+      padding: 2px 8px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: transparent;
+      color: var(--text-muted);
+      cursor: pointer;
+      flex-shrink: 0;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    .ping-btn:hover    { border-color: var(--accent); color: var(--accent); }
+    .ping-btn:disabled { opacity: 0.4; cursor: default; }
+    .ping-result { font-size: 11px; flex-shrink: 0; }
+    .ping-result.ok  { color: var(--status-ok); }
+    .ping-result.err { color: var(--status-err); }
     #contacts-empty {
       color: var(--text-muted); font-size: 14px;
       text-align: center; margin-top: 40px;
@@ -2378,6 +2394,7 @@
   // ── Contacts page ────────────────────────────────────────────────────────
   const contactsMap    = new Map(); // key(12-char prefix) → contact data
   const pendingMap     = new Map(); // pubkey → pending contact data
+  const pingState      = new Map(); // contact_key → {status, rtt_ms, snr, rssi}
   const contactsListEl = document.getElementById("contacts-list");
   const sortSelect     = document.getElementById("contacts-sort");
   const filterType     = document.getElementById("filter-type");
@@ -2652,6 +2669,38 @@
         mapLink.rel = "noopener";
         mapLink.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg> Map`;
         card.appendChild(mapLink);
+      }
+
+      if (c.node_type === 1) {
+        const ps = pingState.get(c.key);
+
+        if (ps && ps.status === "ok") {
+          const res = document.createElement("span");
+          res.className = "ping-result ok";
+          res.textContent = `${ps.rtt_ms} ms` +
+            (ps.snr  != null ? ` · ${ps.snr} dB`   : "") +
+            (ps.rssi != null ? ` · ${ps.rssi} dBm` : "");
+          card.appendChild(res);
+        } else if (ps && ps.status === "timeout") {
+          const res = document.createElement("span");
+          res.className = "ping-result err";
+          res.textContent = "timeout";
+          card.appendChild(res);
+        }
+
+        const pingBtn = document.createElement("button");
+        pingBtn.className = "ping-btn";
+        if (ps && ps.status === "pending") {
+          pingBtn.textContent = "…";
+          pingBtn.disabled = true;
+        } else {
+          pingBtn.textContent = "Ping";
+        }
+        pingBtn.addEventListener("click", () => {
+          if (!ws || !wsConnected) return;
+          ws.send(JSON.stringify({ type: "ping_repeater", contact_key: c.key }));
+        });
+        card.appendChild(pingBtn);
       }
 
       contactsListEl.appendChild(card);
@@ -4320,6 +4369,15 @@
         onAdvertUpdate(packet);
       } else if (packet.type === "advert_complete") {
         onAdvertComplete(packet.advert);
+      } else if (packet.type === "ping_sent") {
+        pingState.set(packet.contact_key, { status: "pending" });
+        if (document.getElementById("page-contacts").classList.contains("active")) renderContacts();
+      } else if (packet.type === "ping_response") {
+        pingState.set(packet.contact_key, { status: "ok", rtt_ms: packet.rtt_ms, snr: packet.snr, rssi: packet.rssi });
+        if (document.getElementById("page-contacts").classList.contains("active")) renderContacts();
+      } else if (packet.type === "ping_timeout") {
+        pingState.set(packet.contact_key, { status: "timeout" });
+        if (document.getElementById("page-contacts").classList.contains("active")) renderContacts();
       } else if (packet.type === "contact_removed") {
         // Remove by 12-char key prefix
         for (const [k] of contactsMap) { if (k === packet.pubkey) contactsMap.delete(k); }

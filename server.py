@@ -64,6 +64,10 @@ mc_instance = None
 
 RELAY_WINDOW_SECS = 20      # how long to listen for echoes after sending
 
+# ── Repeater ping ─────────────────────────────────────────────────────────────
+PING_TIMEOUT_SECS = 30
+pending_pings: dict = {}   # contact_key (short prefix) -> {sent_at, contact_name}
+
 # Set at startup from CLI args
 serial_port: str = ""
 serial_baud: int = 115200
@@ -574,10 +578,35 @@ async def meshcore_listener() -> None:
                 logger.info(f"Autoadd config: {autoadd_config}")
                 await broadcast({"type": "autoadd_config", "value": autoadd_config})
 
+            async def on_status_response(event) -> None:
+                p = event.payload or {}
+                responder = p.get("pubkey_prefix") or p.get("pubkey") or ""
+                matched_key = None
+                for ck in list(pending_pings):
+                    if ck.startswith(responder) or responder.startswith(ck):
+                        matched_key = ck
+                        break
+                if not matched_key:
+                    return
+                ping = pending_pings.pop(matched_key, None)
+                if not ping:
+                    return
+                rtt_ms = int((datetime.now(timezone.utc).timestamp() - ping["sent_at"]) * 1000)
+                logger.info(f"Ping response from {matched_key}: {rtt_ms} ms")
+                await broadcast({
+                    "type":         "ping_response",
+                    "contact_key":  matched_key,
+                    "contact_name": ping["contact_name"],
+                    "rtt_ms":       rtt_ms,
+                    "snr":          p.get("snr"),
+                    "rssi":         p.get("rssi"),
+                })
+
             mc.subscribe(EventType.CONTACTS,         on_contact)
             mc.subscribe(EventType.NEW_CONTACT,      on_new_contact_pending)
             mc.subscribe(EventType.NEXT_CONTACT,     on_contact)
             mc.subscribe(EventType.AUTOADD_CONFIG,   on_autoadd_config)
+            mc.subscribe(EventType.STATUS_RESPONSE,  on_status_response)
 
             await mc.start_auto_message_fetching()
 
@@ -721,6 +750,14 @@ async def _advert_window_close(advert_id: int) -> None:
     await broadcast({"type": "advert_complete", "advert": summary})
 
 
+async def _ping_timeout(contact_key: str, sent_at: float) -> None:
+    await asyncio.sleep(PING_TIMEOUT_SECS)
+    ping = pending_pings.get(contact_key)
+    if ping and ping["sent_at"] == sent_at:
+        pending_pings.pop(contact_key, None)
+        await broadcast({"type": "ping_timeout", "contact_key": contact_key})
+
+
 async def do_send_advert(flood: bool = False) -> None:
     if mc_instance is None:
         return
@@ -755,6 +792,25 @@ async def _advert_schedule_loop() -> None:
 
 async def handle_send_advert(packet: dict) -> None:
     await do_send_advert(flood=bool(packet.get("flood", False)))
+
+
+async def handle_ping_repeater(packet: dict) -> None:
+    contact_key = packet.get("contact_key", "")
+    if not contact_key or mc_instance is None:
+        return
+    contact = find_contact(contact_key)
+    try:
+        await mc_instance.commands.send_statusreq(contact_key)
+        now = datetime.now(timezone.utc).timestamp()
+        pending_pings[contact_key] = {
+            "sent_at":      now,
+            "contact_name": contact.get("name") or contact_key,
+        }
+        logger.info(f"Ping sent to {contact_key}")
+        await broadcast({"type": "ping_sent", "contact_key": contact_key, "sent_at": int(now)})
+        asyncio.create_task(_ping_timeout(contact_key, now))
+    except Exception as exc:
+        logger.error(f"ping_repeater failed: {exc}")
 
 
 async def handle_set_advert_schedule(packet: dict) -> None:
@@ -1088,6 +1144,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 await handle_send_advert(packet)
             elif packet.get("type") == "set_advert_schedule":
                 await handle_set_advert_schedule(packet)
+            elif packet.get("type") == "ping_repeater":
+                await handle_ping_repeater(packet)
     except WebSocketDisconnect:
         pass
     finally:
