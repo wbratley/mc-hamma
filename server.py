@@ -799,9 +799,11 @@ async def handle_ping_repeater(packet: dict) -> None:
     contact_key = packet.get("contact_key", "")
     if not contact_key or mc_instance is None:
         return
-    contact = find_contact(contact_key)
+    # contact_key is a short prefix; send_statusreq needs the full pubkey
+    full_pubkey = next((pk for pk in contacts if pk.startswith(contact_key)), contact_key)
+    contact = contacts.get(full_pubkey) or find_contact(contact_key)
     try:
-        await mc_instance.commands.send_statusreq(contact_key)
+        await mc_instance.commands.send_statusreq(full_pubkey)
         now = datetime.now(timezone.utc).timestamp()
         pending_pings[contact_key] = {
             "sent_at":      now,
