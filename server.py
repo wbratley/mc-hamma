@@ -3,6 +3,7 @@ import argparse
 import json
 import logging
 import math
+import subprocess
 from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -20,6 +21,18 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+def _get_git_hash() -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+    except Exception:
+        return "unknown"
+
+GIT_HASH = _get_git_hash()
 
 HISTORY_FILE = Path("chat_history.json")
 DM_HISTORY_DIR = Path("dm_history")
@@ -1055,6 +1068,11 @@ STATIC_DIR = Path(__file__).parent / "static"
 @app.get("/")
 async def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get("/api/version")
+async def get_version() -> dict:
+    return {"commit": GIT_HASH}
 
 
 @app.get("/api/scopes")

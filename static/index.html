@@ -755,6 +755,14 @@
     #status.reconnecting { background: #2a1d06; color: var(--status-warn); }
     #status.reconnecting::before { background: var(--status-warn); animation: pulse 1s ease-in-out infinite; }
 
+    #version-badge {
+      font-size: 10px;
+      color: var(--text-muted);
+      opacity: 0.6;
+      font-family: monospace;
+      flex-shrink: 0;
+    }
+
     @keyframes pulse {
       0%, 100% { opacity: 1; }
       50%       { opacity: 0.3; }
@@ -1169,6 +1177,7 @@
   </div>
 
   <div id="status" class="disconnected">Disconnected</div>
+  <span id="version-badge"></span>
 
   <div style="position:relative">
     <button id="burger-btn" aria-label="Menu">
@@ -1793,6 +1802,11 @@
   }
 
   loadScopes();
+
+  fetch("/api/version")
+    .then(r => r.ok ? r.json() : null)
+    .then(d => { if (d?.commit) document.getElementById("version-badge").textContent = d.commit; })
+    .catch(() => {});
 
   function sendMessage() {
     const raw = msgInput.value.trim();
