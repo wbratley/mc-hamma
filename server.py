@@ -354,6 +354,7 @@ async def meshcore_listener() -> None:
                     "rssi": rx.get("rssi"),
                     "sender_lat": None,
                     "sender_lon": None,
+                    "scope": payload.get("scope") or None,
                 }
                 message_buffer.append(msg)
                 save_history()
@@ -968,10 +969,15 @@ async def handle_send_dm(packet: dict) -> None:
 async def handle_send(packet: dict) -> None:
     text        = packet.get("text", "").strip()
     channel_idx = packet.get("channel_idx", 0)
+    scope       = packet.get("scope", "*") or "*"
     if not text or mc_instance is None:
         return
     try:
+        if scope != "*":
+            await mc_instance.commands.set_flood_scope(scope)
         await mc_instance.commands.send_chan_msg(channel_idx, text)
+        if scope != "*":
+            await mc_instance.commands.set_flood_scope("*")
         msg = {
             "id": next(msg_id_counter),
             "type": "message",
@@ -981,6 +987,7 @@ async def handle_send(packet: dict) -> None:
             "channel_idx": channel_idx,
             "channel_name": channel_names.get(channel_idx),
             "own": True,
+            "scope": scope if scope != "*" else None,
         }
         message_buffer.append(msg)
         save_history()
@@ -1046,6 +1053,22 @@ STATIC_DIR = Path(__file__).parent / "static"
 @app.get("/")
 async def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get("/api/scopes")
+async def get_scopes() -> dict:
+    """Return available flood scopes. Tries the device; falls back to defaults."""
+    defaults = ["*"]
+    if mc_instance is None:
+        return {"scopes": defaults}
+    try:
+        result = await mc_instance.commands.get_regions()
+        names = [r.get("name") or r for r in result] if result else []
+        if "*" not in names:
+            names.insert(0, "*")
+        return {"scopes": names}
+    except Exception:
+        return {"scopes": defaults}
 
 
 @app.websocket("/ws")
