@@ -2734,7 +2734,7 @@
         card.appendChild(mapLink);
       }
 
-      if (c.node_type === 1) {
+      if (c.node_type === 1 || c.node_type === 2 || c.node_type === 3) {
         const ps = pingState.get(c.key);
 
         if (ps && ps.status === "ok") {
