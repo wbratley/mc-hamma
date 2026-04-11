@@ -3805,10 +3805,12 @@
     let   edgesArr = [...graphEdges.values()];
 
     // ── Apply edge filters ───────────────────────────────────────────────
-    // Reference time: wall clock, or the latest message timestamp if it's ahead
-    // of wall clock. Using pure _latestMsgTimestamp caused nodes to vanish when
-    // device clocks diverged from the server's wall clock (which sets last_seen).
-    const refTime    = Math.max(_latestMsgTimestamp, Date.now() / 1000);
+    // Reference time: always wall clock. _latestMsgTimestamp is monotonically
+    // growing and can be permanently corrupted by a single bad device clock
+    // (future timestamp in message history), making every edge fail the filter.
+    // last_seen on edges is set from server wall clock, so wall clock is the
+    // only correct reference.
+    const refTime    = Date.now() / 1000;
     const maxAgeSecs = _graphFilters.maxAgeHours * 3600;
     const allMaxStr  = Math.max(...edgesArr.map(e => e.strength), 1);
     const minStr     = (_graphFilters.minStrengthPct / 100) * allMaxStr;
