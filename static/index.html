@@ -2357,9 +2357,9 @@
       return r.minHops !== null ? hopsLabel(r.minHops) : '<span style="color:var(--text-muted)">—</span>';
     }
 
-    // ── Closest chatters by hops — client nodes (node_type 0) sorted by BFS distance ───
+    // ── Closest chatters by hops — client/unknown nodes (not explicitly a repeater/gw/room) ───
     const closestNodes = [...nodeAgg.values()]
-      .filter(r => r.minHops !== null && r.node_type === 0)
+      .filter(r => r.minHops !== null && r.node_type !== 1 && r.node_type !== 2 && r.node_type !== 3)
       .sort((a, b) => a.minHops - b.minHops || a.name.localeCompare(b.name))
       .slice(0, 10);
 
