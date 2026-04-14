@@ -2759,6 +2759,13 @@
         card.appendChild(pingBtn);
       }
 
+      const dmBtn = document.createElement("button");
+      dmBtn.className = "ping-btn";
+      dmBtn.textContent = "DM";
+      dmBtn.title = `Open DM thread with ${c.name}`;
+      dmBtn.addEventListener("click", () => openDmThread(c.key, c.name));
+      card.appendChild(dmBtn);
+
       contactsListEl.appendChild(card);
     }
   }
@@ -2923,9 +2930,8 @@
     }
   }
 
-  function openDmThread(key) {
-    const chat = dmChats.get(key);
-    if (!chat) return;
+  function openDmThread(key, name) {
+    const chat = getOrCreateDmChat(key, name);
     currentDmKey = key;
     chat.unread = 0;
     setLastReadId("dm_" + key, maxMsgId(chat.messages));
