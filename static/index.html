@@ -2293,6 +2293,20 @@
     // Each edge has: { a, b, count (total path observations), strength, last_seen }
     const now6h = Date.now() / 1000 - 6 * 3600;
 
+    // Resolve a human-readable name for a node hash.
+    // graphNodes is updated on graph snapshots; contactsMap is updated on contact events.
+    // Either may arrive first, so check both.
+    function resolveNodeName(hash) {
+      const gn = graphNodes.get(hash);
+      if (gn && gn.name && /[^0-9a-f]/i.test(gn.name)) return gn.name;
+      // contactsMap key = pubkey[:12]; sender_hash may be a shorter prefix — match by prefix
+      for (const [key, contact] of contactsMap) {
+        if ((key.startsWith(hash) || hash.startsWith(key)) && contact.name && /[^0-9a-f]/i.test(contact.name))
+          return contact.name;
+      }
+      return (gn && gn.name) || hash;
+    }
+
     // Per-node aggregates
     const nodeAgg = new Map(); // hash → { hash, name, totalObs, links, totalStrength, recentObs, recentLinks, minHops }
     for (const e of graphEdges.values()) {
@@ -2302,7 +2316,7 @@
           const gn = graphNodes.get(h);
           nodeAgg.set(h, {
             hash: h,
-            name: (gn && gn.name) || h.slice(0, 8),
+            name: resolveNodeName(h),
             node_type: gn ? gn.node_type : null,
             totalObs: 0,   // sum of edge counts (total path observations)
             links: 0,      // number of distinct edges
@@ -2364,9 +2378,21 @@
       return r.minHops !== null ? hopsLabel(r.minHops) : '<span style="color:var(--text-muted)">—</span>';
     }
 
-    // ── Closest chatters by hops — client/unknown nodes (not explicitly a repeater/gw/room) ───
-    const closestNodes = [...nodeAgg.values()]
-      .filter(r => r.minHops !== null && r.node_type !== 1 && r.node_type !== 2 && r.node_type !== 3)
+    // ── Closest chatters — people in chat channels we have seen messages from ──
+    // Uses nodeShortestPath (keyed by sender_hash, updated on every received message)
+    // so only actual chatters appear here, not relay-only graph nodes.
+    const closestNodes = [...nodeShortestPath.values()]
+      .map(entry => {
+        const h = entry.senderHash;
+        const gn = graphNodes.get(h);
+        return {
+          hash: h,
+          name: resolveNodeName(h) || entry.sender || h,
+          node_type: gn ? gn.node_type : null,
+          minHops: entry.hops,
+        };
+      })
+      .filter(r => r.node_type !== 1 && r.node_type !== 2 && r.node_type !== 3)
       .sort((a, b) => a.minHops - b.minHops || a.name.localeCompare(b.name))
       .slice(0, 10);
 
