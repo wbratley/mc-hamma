@@ -424,7 +424,7 @@ async def meshcore_listener() -> None:
                 rssi           = payload.get("rssi")
                 pkt_hash       = payload.get("pkt_hash")
 
-                if not path or snr is None:
+                if snr is None:
                     return
 
                 # Push path info onto FIFO queue for on_channel_msg to consume.
@@ -438,13 +438,15 @@ async def meshcore_listener() -> None:
                         "rssi": rssi,
                     })
 
-                # Last entry in path = the node that directly handed us the packet
+                # Last entry in path = the node that directly handed us the packet.
+                # Empty path means the packet arrived with no relay hops (direct).
                 chars_per_hop = path_hash_size * 2
-                hop_hash      = path[-chars_per_hop:]
+                hop_hash      = path[-chars_per_hop:] if len(path) >= chars_per_hop else ""
 
                 # ── Relay detection ──────────────────────────────────────────
-                # GRP_TXT (channel text) = payload_type 5
-                if payload.get("payload_type") == 5 and pkt_hash is not None:
+                # GRP_TXT (channel text) = payload_type 5.
+                # Skip relay tracking for direct receptions (empty hop_hash).
+                if hop_hash and payload.get("payload_type") == 5 and pkt_hash is not None:
                     now = int(datetime.now(timezone.utc).timestamp())
                     for ch_idx, win in list(relay_windows.items()):
                         age = now - win["sent_at"]
@@ -471,6 +473,12 @@ async def meshcore_listener() -> None:
                                 ],
                                 "final": False,
                             })
+
+                # No hop_hash means the packet arrived directly (no relay).
+                # Skip neighbor tracking; SNR was already pushed to _rx_scratch.
+                if not hop_hash:
+                    logger.info(f"Direct packet (no relay): snr={snr} rssi={rssi}")
+                    return
 
                 if hop_hash not in neighbors:
                     neighbors[hop_hash] = {
