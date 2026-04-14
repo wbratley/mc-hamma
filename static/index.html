@@ -1957,7 +1957,7 @@
       _latestMsgTimestamp = msg.timestamp;
     }
 
-    // Track shortest path per sender node
+    // Track shortest path per sender node (hash-keyed, for graph path overlay)
     if (!msg.own && msg.sender_hash) {
       const h = msg.sender_hash;
       const hops = msg.hops ?? (msg.path || []).length;
@@ -1965,6 +1965,17 @@
       if (!existing || hops < existing.hops) {
         const pathHashes = (msg.path || []).map(p => (typeof p === "object" ? p.hash : p));
         nodeShortestPath.set(h, { hops, senderHash: h, sender: msg.sender, path: pathHashes, msg });
+      }
+    }
+
+    // Track chatter hop distances by sender name — works even when sender_hash is
+    // absent (pubkey_prefix not always present in firmware events).
+    if (!msg.own && msg.sender) {
+      const nameKey = msg.sender.toLowerCase();
+      const hops = msg.hops ?? (msg.path || []).length;
+      const existing = chatterMinHops.get(nameKey);
+      if (!existing || hops < existing.hops) {
+        chatterMinHops.set(nameKey, { name: msg.sender, hops });
         if (document.getElementById("page-rankings").classList.contains("active")) renderRankings();
       }
     }
@@ -2379,53 +2390,38 @@
     }
 
     // ── Closest chatters — people in chat channels we have seen messages from ──
-    // A node is a "chatter" if nodeShortestPath has it (message received this session)
-    // OR a saved contact has chat history (chat_count > 0 / last_chat set).
-    // nodeAgg is populated immediately from the graph snapshot; nodeShortestPath
-    // fills as messages arrive. We combine both so the table is never empty on load.
-    function isKnownChatter(hash) {
-      if (nodeShortestPath.has(hash)) return true;
-      for (const [key, contact] of contactsMap) {
-        if ((key.startsWith(hash) || hash.startsWith(key)) &&
-            ((contact.chat_count || 0) > 0 || contact.last_chat)) return true;
-      }
-      return false;
+    // chatterMinHops is keyed by sender name (lower-case) and is populated for
+    // every received channel message regardless of whether sender_hash is set.
+    // We also seed from contactsMap so the table is populated on page load from
+    // persistent contact history (chat_count > 0 / last_chat).
+    const chatterRows = new Map(); // nameKey → { name, minHops, node_type }
+
+    // Seed from saved contacts (persistent across sessions).
+    for (const contact of contactsMap.values()) {
+      if (!((contact.chat_count || 0) > 0 || contact.last_chat)) continue;
+      const nameKey = contact.name.toLowerCase();
+      const h = contact.out_path_len;
+      const hops = (h != null && h !== -1) ? h : null;
+      chatterRows.set(nameKey, { name: contact.name, minHops: hops, node_type: contact.node_type });
     }
 
-    const chatterMap = new Map(); // hash → row
-
-    // First pass: graph nodes with known hop distance that are known chatters.
-    for (const [h, agg] of nodeAgg) {
-      if (agg.minHops !== null && isKnownChatter(h)) {
-        const sp = nodeShortestPath.get(h);
-        chatterMap.set(h, {
-          hash: h,
-          name: agg.name,
-          node_type: agg.node_type,
-          // Prefer actual observed hops from messages when available.
-          minHops: sp ? Math.min(agg.minHops, sp.hops) : agg.minHops,
-        });
+    // Overlay with live session data (actual observed message hops take priority).
+    for (const [nameKey, data] of chatterMinHops) {
+      const existing = chatterRows.get(nameKey);
+      if (!existing) {
+        chatterRows.set(nameKey, { name: data.name, minHops: data.hops, node_type: null });
+      } else if (existing.minHops === null || data.hops < existing.minHops) {
+        chatterRows.set(nameKey, { ...existing, minHops: data.hops });
       }
     }
 
-    // Second pass: nodeShortestPath entries not yet in the graph (graph snapshot
-    // may not have caught up with the latest message yet).
-    for (const entry of nodeShortestPath.values()) {
-      const h = entry.senderHash;
-      if (!chatterMap.has(h)) {
-        const gn = graphNodes.get(h);
-        chatterMap.set(h, {
-          hash: h,
-          name: resolveNodeName(h) || entry.sender || h,
-          node_type: gn ? gn.node_type : null,
-          minHops: entry.hops,
-        });
-      }
-    }
-
-    const closestNodes = [...chatterMap.values()]
+    const closestNodes = [...chatterRows.values()]
       .filter(r => r.node_type !== 1 && r.node_type !== 2 && r.node_type !== 3)
-      .sort((a, b) => a.minHops - b.minHops || a.name.localeCompare(b.name))
+      .sort((a, b) => {
+        if (a.minHops === null && b.minHops !== null) return 1;
+        if (a.minHops !== null && b.minHops === null) return -1;
+        return (a.minHops - b.minHops) || a.name.localeCompare(b.name);
+      })
       .slice(0, 10);
 
     // ── Closest repeaters by hops — repeater/gateway types only ─────────────
@@ -2448,8 +2444,7 @@
         ${buildTable(closestNodes, [
           { label: "#",     cls: "rank-num",   fn: (r, i) => i + 1 },
           { label: "Node",  cls: "rank-name",  fn: r => r.name + typeBadge(r.node_type) },
-          { label: "Hops",  cls: "rank-count", fn: r => hopsLabel(r.minHops) },
-          { label: "",      cls: "",           fn: r => mapBtn(r.hash) },
+          { label: "Hops",  cls: "rank-count", fn: r => hopsCell(r) },
         ])}
       </div>`);
     }
@@ -2666,6 +2661,8 @@
     updateContactsCount();
     if (document.getElementById("page-contacts").classList.contains("active"))
       renderContacts();
+    if (document.getElementById("page-rankings").classList.contains("active"))
+      renderRankings();
   }
 
   function renderContacts() {
@@ -3189,6 +3186,11 @@
 
   // Shortest-path tracking: senderHash → { hops, senderHash, sender, path }
   const nodeShortestPath = new Map();
+
+  // Chatter hop-distance tracking: senderName.toLowerCase() → { name, hops }
+  // Populated for every received channel message regardless of whether sender_hash
+  // is present (pubkey_prefix may be absent from the firmware event).
+  const chatterMinHops = new Map();
 
   function clearRouteHighlight(unlock = false) {
     if (_gLinkSel) _gLinkSel.classed("link-route", false).classed("link-route-rev", false);
