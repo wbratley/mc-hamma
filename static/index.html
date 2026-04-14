@@ -2379,19 +2379,51 @@
     }
 
     // ── Closest chatters — people in chat channels we have seen messages from ──
-    // Uses nodeShortestPath (keyed by sender_hash, updated on every received message)
-    // so only actual chatters appear here, not relay-only graph nodes.
-    const closestNodes = [...nodeShortestPath.values()]
-      .map(entry => {
-        const h = entry.senderHash;
+    // A node is a "chatter" if nodeShortestPath has it (message received this session)
+    // OR a saved contact has chat history (chat_count > 0 / last_chat set).
+    // nodeAgg is populated immediately from the graph snapshot; nodeShortestPath
+    // fills as messages arrive. We combine both so the table is never empty on load.
+    function isKnownChatter(hash) {
+      if (nodeShortestPath.has(hash)) return true;
+      for (const [key, contact] of contactsMap) {
+        if ((key.startsWith(hash) || hash.startsWith(key)) &&
+            ((contact.chat_count || 0) > 0 || contact.last_chat)) return true;
+      }
+      return false;
+    }
+
+    const chatterMap = new Map(); // hash → row
+
+    // First pass: graph nodes with known hop distance that are known chatters.
+    for (const [h, agg] of nodeAgg) {
+      if (agg.minHops !== null && isKnownChatter(h)) {
+        const sp = nodeShortestPath.get(h);
+        chatterMap.set(h, {
+          hash: h,
+          name: agg.name,
+          node_type: agg.node_type,
+          // Prefer actual observed hops from messages when available.
+          minHops: sp ? Math.min(agg.minHops, sp.hops) : agg.minHops,
+        });
+      }
+    }
+
+    // Second pass: nodeShortestPath entries not yet in the graph (graph snapshot
+    // may not have caught up with the latest message yet).
+    for (const entry of nodeShortestPath.values()) {
+      const h = entry.senderHash;
+      if (!chatterMap.has(h)) {
         const gn = graphNodes.get(h);
-        return {
+        chatterMap.set(h, {
           hash: h,
           name: resolveNodeName(h) || entry.sender || h,
           node_type: gn ? gn.node_type : null,
           minHops: entry.hops,
-        };
-      })
+        });
+      }
+    }
+
+    const closestNodes = [...chatterMap.values()]
       .filter(r => r.node_type !== 1 && r.node_type !== 2 && r.node_type !== 3)
       .sort((a, b) => a.minHops - b.minHops || a.name.localeCompare(b.name))
       .slice(0, 10);
